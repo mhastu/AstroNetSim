@@ -1,3 +1,24 @@
+# vs code
+settings.json
+
+# data files
+diameterData.csv
+positionData.csv
+branchData.mat
+EllipseParameters.csv
+Shell_FeatureVector.csv
+FeatureVector.csv
+
+# dataset files
+dataset_C10.mat
+dataset_C11.mat
+dataset_H00.mat
+dataset_H01.mat
+dataset_H02.mat
+dataset_H04.mat
+
+# ---------- from preset "Python" ----------
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
