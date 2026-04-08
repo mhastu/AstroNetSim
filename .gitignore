@@ -1,5 +1,6 @@
 # vs code
 settings.json
+launch.json
 
 # data files
 diameterData.csv
@@ -17,6 +18,7 @@ dataset_H01.mat
 dataset_H02.mat
 dataset_H04.mat
 matlab_and_excel_data.mat
+H00.pkl
 
 # ---------- from preset "Python" ----------
 
