@@ -21,9 +21,9 @@ class Cell:
         self._ID = ID
         self._filamentPoints = filamentPoints
         self._filamentEdges = filamentEdges
-        self._branches = branchPositions
+        self._branchPositions = branchPositions
         if branchDiameters is not None:
-            self._branches.loc[:, "PtDiameter"] = branchDiameters.loc[:, "PtDiameter"]
+            self._branchPositions.loc[:, "PtDiameter"] = branchDiameters.loc[:, "PtDiameter"]
 
         self._fine_branches = None  # type: dict[int, np.ndarray]
         self._rough_branches = None  # type: dict[int, pd.DataFrame]
@@ -39,12 +39,12 @@ class Cell:
     def filamentEdges(self):    
         return self._filamentEdges
     @property
-    def branches(self):
-        return self._branches
+    def branchPositions(self):
+        return self._branchPositions
     @property
     def n_branchingPoints(self):
         """Number of branching points in the cell."""
-        return self._branches.loc[self._branches.loc[:, "Type"] == "Dendrite Branch"].shape[0]
+        return self._branchPositions.loc[self._branchPositions.loc[:, "Type"] == "Dendrite Branch"].shape[0]
     @property
     def fine_branches(self):
         """Fine branches of the cell as a dict with key = branch ID and value = np.ndarray of shape (n_points, 3) containing the points of the branch."""
@@ -71,15 +71,18 @@ class Cell:
         :param minimum_depth: Minimum depth of branching points to be considered for the ellipsoid calculation. Only branching points with a depth greater than or equal to this value will be used to calculate the ellipsoid.
         :type minimum_depth: int
         """
-        if max(self._branches.loc[:, "Depth"]) <= minimum_depth * 2:
-            minimum_depth = max(self._branches.loc[:, "Depth"])/2
+        if max(self._branchPositions.loc[:, "Depth"]) <= minimum_depth * 2:
+            minimum_depth = max(self._branchPositions.loc[:, "Depth"])/2
+        self._logger.info(f"Calculating ellipsoid for cell {self.ID} with minimum depth {minimum_depth}...")
 
         # take outermost points
-        xp = self._branches.loc[(self._branches["Type"] == "Dendrite Terminal") & (self._branches["Depth"] >= minimum_depth)]["PtPositionX"]
-        yp = self._branches.loc[(self._branches["Type"] == "Dendrite Terminal") & (self._branches["Depth"] >= minimum_depth)]["PtPositionY"]
-        zp = self._branches.loc[(self._branches["Type"] == "Dendrite Terminal") & (self._branches["Depth"] >= minimum_depth)]["PtPositionZ"]
+        xp = self._branchPositions.loc[(self._branchPositions["Type"] == "Dendrite Terminal") & (self._branchPositions["Depth"] >= minimum_depth)]["PtPositionX"]
+        yp = self._branchPositions.loc[(self._branchPositions["Type"] == "Dendrite Terminal") & (self._branchPositions["Depth"] >= minimum_depth)]["PtPositionY"]
+        zp = self._branchPositions.loc[(self._branchPositions["Type"] == "Dendrite Terminal") & (self._branchPositions["Depth"] >= minimum_depth)]["PtPositionZ"]
         ellipse_points = np.array((xp, yp, zp)).T
         self._ellipsoid = mvee(ellipse_points)
+
+        self._logger.info(f"Finished calculating ellipsoid for cell {self.ID}.")
         return self
 
     def _find_branches(self):
@@ -89,7 +92,7 @@ class Cell:
         self._rough_branches = {}
 
         # Find the corresponding filament points for each branch position
-        pos = self._branches[["PtPositionX", "PtPositionY", "PtPositionZ"]].copy().to_numpy() #Extract only Position Data
+        pos = self._branchPositions[["PtPositionX", "PtPositionY", "PtPositionZ"]].copy().to_numpy() #Extract only Position Data
         filamentPointIndex_in_branchPosition = np.zeros(np.size(pos,0))
         for i, position in enumerate(pos):
             # Find the index of the closest filament point to the branch position
@@ -103,7 +106,7 @@ class Cell:
     
         # dict with key = mergepoint, keys = point pos, point ID
         self._fine_branches[0] = self._filamentPoints[startpoint:endpoint, :]
-        self._rough_branches[0] = self._branches.loc[(filamentPointIndex_in_branchPosition <= endpoint)].copy()
+        self._rough_branches[0] = self._branchPositions.loc[(filamentPointIndex_in_branchPosition <= endpoint)].copy()
         #go over all mergepoints by indexes
         for i in range(len(indices)-1):
             mergepoint = self.filamentEdges[indices[i], 0]
@@ -111,31 +114,43 @@ class Cell:
             startpoint = indices[i] + 1
 
             self._fine_branches[i+1] = np.vstack((self._filamentPoints[mergepoint], self._filamentPoints[startpoint:endpoint, :]))
-            self._rough_branches[i+1] = self._branches.loc[filamentPointIndex_in_branchPosition == mergepoint].copy()
-            self._rough_branches[i+1] = pd.concat([self._rough_branches[i+1], self._branches.loc[(filamentPointIndex_in_branchPosition <= endpoint) & (filamentPointIndex_in_branchPosition >= startpoint)]], ignore_index=True)
+            self._rough_branches[i+1] = self._branchPositions.loc[filamentPointIndex_in_branchPosition == mergepoint].copy()
+            self._rough_branches[i+1] = pd.concat([self._rough_branches[i+1], self._branchPositions.loc[(filamentPointIndex_in_branchPosition <= endpoint) & (filamentPointIndex_in_branchPosition >= startpoint)]], ignore_index=True)
 
         self._logger.info(f"Finished finding branches for cell {self.ID}.")
         return self
 
-    def to_dict(self, version = "1.0"):
+    def to_dict(self, version = "latest"):
         """Returns a dict containing the cell data.
         
         :param version: Version of the export format. Consistent with `from_dict()`.
         """
-        if version == "1.0":
+        if version == "latest":
+            version = "1.1"
+        if version == "1.1":
             return {
                 "version": version,
                 "ID": self.ID,
                 "filamentPoints": self._filamentPoints,
                 "filamentEdges": self._filamentEdges,
-                "branches": self._branches,
+                "branchPositions": self._branchPositions,
+                "fine_branches": self._fine_branches,
+                "rough_branches": self._rough_branches,
+                "ellipsoid": self._ellipsoid
+            }
+        elif version == "1.0":
+            return {
+                "version": version,
+                "ID": self.ID,
+                "filamentPoints": self._filamentPoints,
+                "filamentEdges": self._filamentEdges,
+                "branches": self._branchPositions,
                 "fine_branches": self._fine_branches,
                 "rough_branches": self._rough_branches,
                 "ellipsoid": self._ellipsoid
             }
         else:
             raise ValueError(f"Unsupported dict export version: {version}")
-        return self
 
     def from_dict(self, data: dict):
         """Loads the cell data from a dict.
@@ -143,11 +158,19 @@ class Cell:
         :param data: A dict containing the cell data and a version number consistent with `to_dict()`.
         """
         version = data["version"]
-        if version == "1.0":
+        if version == "1.1":
             self._ID = data["ID"]
             self._filamentPoints = data["filamentPoints"]
             self._filamentEdges = data["filamentEdges"]
-            self._branches = data["branches"]
+            self._branchPositions = data["branchPositions"]
+            self._fine_branches = data["fine_branches"]
+            self._rough_branches = data["rough_branches"]
+            self._ellipsoid = data["ellipsoid"]
+        elif version == "1.0":
+            self._ID = data["ID"]
+            self._filamentPoints = data["filamentPoints"]
+            self._filamentEdges = data["filamentEdges"]
+            self._branchPositions = data["branches"]
             self._fine_branches = data["fine_branches"]
             self._rough_branches = data["rough_branches"]
             self._ellipsoid = data["ellipsoid"]

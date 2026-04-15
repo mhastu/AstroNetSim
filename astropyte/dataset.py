@@ -53,7 +53,7 @@ class Dataset:
         self._encapsulating_cuboid = [(min_x, max_x), (min_y, max_y), (min_z, max_z)]
         return self
     
-    def to_pickle(self, path: str, version = "1.0"):
+    def to_pickle(self, path: str, version = "latest"):
         """Saves the dataset to a pickle file.
 
         Parameters
@@ -64,7 +64,9 @@ class Dataset:
             The version of the export format.
         """
         self._logger.info(f"Saving dataset to pickle file {path}...")
-        if version == "1.0":
+        if version == "latest":
+            version = "1.1"
+        if version in ["1.0", "1.1"]:
             data = {
                 "version": version,
                 "name": self._name,
@@ -82,6 +84,7 @@ class Dataset:
 
     def from_pickle(self, path: str):
         """Loads the dataset from a pickle file.
+        Overwrites all previously loaded data.
         
         Parameters
         ----------
@@ -93,10 +96,10 @@ class Dataset:
             data = pickle.load(f)
 
         version = data["version"]
-        if version == "1.0":
-            self._name = data["name"]
-            self._path = data["path"]
-            self._encapsulating_cuboid = data["encapsulating_cuboid"]
+        if version in ["1.0", "1.1"]:
+            self._name = data["name"] if "name" in data else None
+            self._path = data["path"] if "path" in data else None
+            self._encapsulating_cuboid = data["encapsulating_cuboid"] if "encapsulating_cuboid" in data else None
             self._cells = {
                 cell_data["ID"]: Cell(logger = self._logger).from_dict(cell_data) for cell_data in data["cells"]
             }
@@ -159,7 +162,7 @@ class Dataset:
         self._logger.info(f"Finished loading dataset. Loaded {len(self.cells)} cells.")
         return self
 
-    def remove_edge_cells(self, offset: float = 2., mode: str = "hardlimit", limit: int = 20):
+    def remove_edge_cells(self, offset: float = 2., mode: str = "hardlimit", limit: int = 20):  # TODO: implement cell.is_edge_cell(offset, mode, limit)
         """
         Removes cells that have a certain number or percentage of their filament points within a certain distance to
         the boundaries of the encapsulating cuboid.
@@ -204,7 +207,7 @@ class Dataset:
         self._logger.info(f"Removed {n_cells_before - n_cells_after} edge cells from original {n_cells_before} cells. Remaining cells: {n_cells_after}.")
         return self
 
-    def remove_artifact_cells(self, threshold: int):
+    def remove_artifact_cells(self, threshold: int):  # TODO: implement cell.is_artifact(threshold)
         """Removes cells that have less than a certain number of branching points.
 
         :param threshold: Maximum number of branching points for a cell to be considered an artifact and removed.
