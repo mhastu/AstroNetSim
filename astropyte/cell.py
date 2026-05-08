@@ -1,8 +1,12 @@
 import logging
 import numpy as np
 import pandas as pd
+from morphio import Morphology
+from morphio.mut import Morphology as MutMorphology
 
-from .util import mvee
+from numpy.typing import NDArray
+
+from .util import mvee, points_inside_ellipsoid
 
 class Cell:
     """An astrocyte.
@@ -10,53 +14,76 @@ class Cell:
     Functions that don't obviously return something else allow chaining, e.g.
     `Cell().from_dict(cell_data)._find_branches().to_dict()`
     """
-    def __init__(self, ID: int = None,
-                 filamentPoints: np.ndarray = None,
-                 filamentEdges: np.ndarray = None,
-                 branchPositions: np.ndarray = None,
-                 branchDiameters: np.ndarray = None,
+    def __init__(self, 
+                 morphology: Morphology,
+                 ID: int = None,
                  logger: logging.Logger = None):
         self._logger = logger or logging.getLogger(__name__)
 
-        self._ID = ID
-        self._filamentPoints = filamentPoints
-        self._filamentEdges = filamentEdges
-        self._branchPositions = branchPositions
-        if branchDiameters is not None:
-            self._branchPositions.loc[:, "PtDiameter"] = branchDiameters.loc[:, "PtDiameter"]
+        self._morphology = morphology  # type: Morphology
+        self._ID = ID  # type: int
 
-        self._fine_branches = None  # type: dict[int, np.ndarray]
-        self._rough_branches = None  # type: dict[int, pd.DataFrame]
-        self._ellipsoid = None  # type: tuple[np.ndarray, np.ndarray, np.ndarray]
+        # caches
+        self._section_depths = None  # type: dict[int, int]
+        self._terminal_points_with_depth = None  # type: list[tuple[list, int]]
+        self._ellipsoid = None  # type: tuple[NDArray, NDArray, NDArray]
 
     @property
-    def ID(self):
+    def morphology(self) -> Morphology:
+        return self._morphology
+    @morphology.setter
+    def morphology(self, val: Morphology):
+        if type(val) == MutMorphology:
+            raise TypeError("new morphology must be immutable")
+        assert type(val) == Morphology, "new morphology must be of type morphio.Morphology"
+        
+        # reset caches
+        self._section_depths = None
+
+    @property
+    def ID(self) -> int:
         return self._ID
-    @property
-    def filamentPoints(self):
-        return self._filamentPoints
-    @property
-    def filamentEdges(self):    
-        return self._filamentEdges
-    @property
-    def branchPositions(self):
-        return self._branchPositions
     @property
     def n_branchingPoints(self):
         """Number of branching points in the cell."""
-        return self._branchPositions.loc[self._branchPositions.loc[:, "Type"] == "Dendrite Branch"].shape[0]
+        return sum(len(section.children) > 1 for section in self.morphology.iter())
     @property
-    def fine_branches(self):
-        """Fine branches of the cell as a dict with key = branch ID and value = np.ndarray of shape (n_points, 3) containing the points of the branch."""
-        if not self._fine_branches:
-            self._find_branches()
-        return self._fine_branches
+    def section_depths(self) -> dict[int, int]:
+        """
+        Dictionary mapping section.id -> section-tree depth.
+        """
+        if self._section_depths is None:
+            _section_depths = {}
+
+            for section in self.morphology.iter():
+                if section.is_root:
+                    _section_depths[section.id] = 0
+                else:
+                    _section_depths[section.id] = _section_depths[section.parent.id] + 1
+
+            self._section_depths = _section_depths
+
+        return self._section_depths
     @property
-    def rough_branches(self):
-        """Rough branches of the cell as a dict with key = branch ID and value = pd.DataFrame containing the branch data."""
-        if not self._rough_branches:
-            self._find_branches()
-        return self._rough_branches
+    def terminal_points_with_depth(self) -> list[tuple[list, int]]:
+        """
+        Terminal section endpoints with their section-tree depth.
+        """
+        if self._terminal_points_with_depth is None:
+            _terminal_points_with_depth = []
+
+            for section in self.morphology.iter():
+                if len(section.children) == 0 and len(section.points) > 0:
+                    _terminal_points_with_depth.append(
+                        (
+                            np.asarray(section.points, dtype=float)[-1],
+                            self.section_depths[section.id],
+                        )
+                    )
+
+            self._terminal_points_with_depth = _terminal_points_with_depth
+
+        return self._terminal_points_with_depth
     @property
     def ellipsoid(self):
         """Minimum volume encapsulating ellipsoid (MVEE) of the cell's filament points as a tuple (center, radii, rotation)."""
@@ -64,66 +91,75 @@ class Cell:
             self._set_ellipsoid()
         return self._ellipsoid
 
-    def _set_ellipsoid(self, minimum_depth: int = 10):
+    def _set_ellipsoid(self, tolerance: float = 1e-8):
         """
-        Sets the ellipsoid parameters for the cell.
-        
-        :param minimum_depth: Minimum depth of branching points to be considered for the ellipsoid calculation. Only branching points with a depth greater than or equal to this value will be used to calculate the ellipsoid.
-        :type minimum_depth: int
-        """
-        if max(self._branchPositions.loc[:, "Depth"]) <= minimum_depth * 2:
-            minimum_depth = max(self._branchPositions.loc[:, "Depth"])/2
-        self._logger.info(f"Calculating ellipsoid for cell {self.ID} with minimum depth {minimum_depth}...")
+        Sets the parameters of the minimum volume encapsulating ellipsoid (MVEE) of the cells morphology points.
 
-        # take outermost points
-        xp = self._branchPositions.loc[(self._branchPositions["Type"] == "Dendrite Terminal") & (self._branchPositions["Depth"] >= minimum_depth)]["PtPositionX"]
-        yp = self._branchPositions.loc[(self._branchPositions["Type"] == "Dendrite Terminal") & (self._branchPositions["Depth"] >= minimum_depth)]["PtPositionY"]
-        zp = self._branchPositions.loc[(self._branchPositions["Type"] == "Dendrite Terminal") & (self._branchPositions["Depth"] >= minimum_depth)]["PtPositionZ"]
-        ellipse_points = np.array((xp, yp, zp)).T
-        self._ellipsoid = mvee(ellipse_points)
+        First, a rough ellipsoid is calculated from terminal points with sufficient
+        section-tree depth. Then all morphology points are checked against the
+        ellipsoid. Points outside the ellipsoid are added and the MVEE is recalculated.
+
+        Parameters
+        ----------
+        tolerance : float
+            Numerical tolerance for the ellipsoid containment check.
+        """
+        self._logger.info(f"Calculating ellipsoid for cell {self.ID}...")
+
+        max_depth = max(depth for _, depth in self.terminal_points_with_depth)
+        minimum_depth = max_depth / 2
+
+        ellipse_points = np.asarray(
+            [
+                point
+                for point, depth in self.terminal_points_with_depth
+                if depth >= minimum_depth
+            ],
+            dtype=float,
+        )
+        if len(ellipse_points) < 4:
+            raise ValueError(
+                f"Not enough terminal points to calculate initial ellipsoid for cell {self.ID}. "
+                f"Found {len(ellipse_points)} points with depth >= {minimum_depth}."
+            )
+
+        all_points = np.asarray(self.morphology.points, dtype=float)
+        if len(all_points) == 0:
+            raise ValueError(f"Cell {self.ID} has no morphology points.")
+
+        # First rough calculation.
+        center, radii, rotation = mvee(ellipse_points)
+
+        # Refinement:
+        # Add all morphology points that lie outside the current ellipsoid.
+        inside_points_mask = points_inside_ellipsoid(
+            all_points,
+            center,
+            radii,
+            rotation,
+            tolerance=tolerance
+        )
+        outside_points = all_points[~inside_points_mask]
+        if len(outside_points) > 0:
+            self._logger.info(
+                f"Ellipsoid refinement for cell {self.ID}: "
+                f"adding {len(outside_points)} outside points."
+            )
+            ellipse_points = np.vstack([ellipse_points, outside_points])
+            center, radii, rotation = mvee(ellipse_points)
+
+        self._ellipsoid = center, radii, rotation
 
         self._logger.info(f"Finished calculating ellipsoid for cell {self.ID}.")
-        return self
-
-    def _find_branches(self):
-        """Finds the branches of the cell and stores them in self._fine_branches and self._rough_branches."""
-        self._logger.info(f"Finding branches for cell {self.ID}...")
-        self._fine_branches = {}
-        self._rough_branches = {}
-
-        # Find the corresponding filament points for each branch position
-        pos = self._branchPositions[["PtPositionX", "PtPositionY", "PtPositionZ"]].copy().to_numpy() #Extract only Position Data
-        filamentPointIndex_in_branchPosition = np.zeros(np.size(pos,0))
-        for i, position in enumerate(pos):
-            # Find the index of the closest filament point to the branch position
-            filamentPointIndex_in_branchPosition[i] = int(np.argmin((position[0] - self._filamentPoints[:, 0])**2 + (position[1] - self._filamentPoints[:, 1])**2 + (position[2] - self._filamentPoints[:, 2])**2))
-
-        indices = np.where(self.filamentEdges[:, 0] != self.filamentEdges[:, 1] - 1)[0]
-        # first Branch
-        startpoint = 0
-        endpoint = indices[0]
-        mergepoint = self.filamentEdges[0, 0]#
-    
-        # dict with key = mergepoint, keys = point pos, point ID
-        self._fine_branches[0] = self._filamentPoints[startpoint:endpoint, :]
-        self._rough_branches[0] = self._branchPositions.loc[(filamentPointIndex_in_branchPosition <= endpoint)].copy()
-        #go over all mergepoints by indexes
-        for i in range(len(indices)-1):
-            mergepoint = self.filamentEdges[indices[i], 0]
-            endpoint = indices[i+1]    
-            startpoint = indices[i] + 1
-
-            self._fine_branches[i+1] = np.vstack((self._filamentPoints[mergepoint], self._filamentPoints[startpoint:endpoint, :]))
-            self._rough_branches[i+1] = self._branchPositions.loc[filamentPointIndex_in_branchPosition == mergepoint].copy()
-            self._rough_branches[i+1] = pd.concat([self._rough_branches[i+1], self._branchPositions.loc[(filamentPointIndex_in_branchPosition <= endpoint) & (filamentPointIndex_in_branchPosition >= startpoint)]], ignore_index=True)
-
-        self._logger.info(f"Finished finding branches for cell {self.ID}.")
         return self
 
     def to_dict(self, version = "latest"):
         """Returns a dict containing the cell data.
         
-        :param version: Version of the export format. Consistent with `from_dict()`.
+        Parameters
+        ----------
+        version : str
+            Version of the export format. Consistent with `from_dict()`.
         """
         if version == "latest":
             version = "1.1"
@@ -155,7 +191,10 @@ class Cell:
     def from_dict(self, data: dict):
         """Loads the cell data from a dict.
 
-        :param data: A dict containing the cell data and a version number consistent with `to_dict()`.
+        Parameters
+        ----------
+        data : dict
+            Contains the cell data and a version number consistent with `to_dict()`.
         """
         version = data["version"]
         if version == "1.1":

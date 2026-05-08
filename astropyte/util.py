@@ -1,4 +1,5 @@
 import numpy as np
+from numpy.typing import NDArray
 
 def mvee(points: np.array, tolerance: float = 1e-2):
     """Computes the minimum volume encapsulating ellipsoid (MVEE) of a set of points using Khachiyan's algorithm.
@@ -49,3 +50,38 @@ def mvee(points: np.array, tolerance: float = 1e-2):
     rotation = eigenvectors
 
     return center, radii, rotation
+
+
+def points_inside_ellipsoid(points, center, radii, rotation, tolerance) -> NDArray[np.bool_]:
+    """
+    Returns the mask (np.array(bool)) of all points inside the ellipsoid.
+
+    The ellipsoid is represented by:
+        center   : shape (3,)
+        radii    : shape (3,)
+        rotation : shape (3, 3)
+
+    A point is inside the ellipsoid if:
+        sum(((rotation.T @ (point - center)) / radii) ** 2) <= 1
+    """
+
+    points = np.asarray(points, dtype=float)
+    center = np.asarray(center, dtype=float)
+    radii = np.asarray(radii, dtype=float)
+    rotation = np.asarray(rotation, dtype=float)
+
+    if np.any(radii <= 0):
+        raise ValueError(
+            f"Invalid ellipsoid radii: {radii}. "
+            "All radii must be positive."
+        )
+
+    shifted = points - center
+
+    # Transform points into the ellipsoid's local coordinate system.
+    local = shifted @ rotation
+
+    normalized = local / radii
+    values = np.sum(normalized ** 2, axis=1)
+
+    return values < (1.0 + tolerance)
