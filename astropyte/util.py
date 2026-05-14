@@ -85,3 +85,21 @@ def points_inside_ellipsoid(points, center, radii, rotation, tolerance) -> NDArr
     values = np.sum(normalized ** 2, axis=1)
 
     return values < (1.0 + tolerance)
+
+
+def create_contour(radius, point_count=20, line_width=0.25):
+    """Create a contour from a radius at origin 0.
+
+    Note: The contour is created in the xy plan.
+
+    within the corpus of ASC files, the mean is 0.21 for the diameter.
+    this diameter is used for displaying the width of the contour line in
+    Neurolucida, and 0.25 seems to be a nice display value
+    """
+    points = np.zeros((point_count, 3))
+    phase = 2 * np.pi / point_count * np.arange(point_count)
+    points[:, 0] = radius * np.sin(phase)
+    points[:, 1] = radius * np.cos(phase)
+    diameters = np.repeat(line_width, point_count)
+
+    return points, diameters

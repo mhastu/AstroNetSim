@@ -3,16 +3,16 @@ import os.path
 import pandas as pd
 import numpy as np
 import pickle
-import networkx
 from collections import defaultdict
 from pymatreader import read_mat
-from morphio import PointLevel, SectionType
-from morphio.mut import Morphology
+from morphio import PointLevel, SectionType, SomaType
+from morphio.mut import Morphology as MutableMorphology
 from scipy.spatial import cKDTree
 
 from numpy.typing import NDArray
 
 from .cell import Cell
+from .util import create_contour
 
 def build_morphology_from_filaments(
         filamentPoints,
@@ -51,8 +51,7 @@ def build_morphology_from_filaments(
         Diameter used for the first section if the root is not a branch point.
 
     section_type : morphio.SectionType
-        Section type to use. For astrocytes, SectionType.glia_process is a
-        reasonable default.
+        Section type to use. default: SectionType.glia_process
 
     atol : float
         Tolerance for matching branchPositions to filamentPoints.
@@ -79,7 +78,7 @@ def build_morphology_from_filaments(
         raise ValueError("branchPositions must have shape (B, 3).")
 
     if len(branch_positions) != len(branch_diameters):
-        raise ValueError("branchPositions and branchDiameters must have the same length.")
+        raise ValueError(f"branchPositions ({len(branch_positions)}) and branchDiameters ({len(branch_diameters)}) must have the same length.")
 
     n_points = len(points)
 
@@ -166,14 +165,13 @@ def build_morphology_from_filaments(
             or degrees.get(i, 0) != 2
         )
 
-    morpho = Morphology()
+    morpho = MutableMorphology()
 
-    # Optional:
-    # If you have a real soma/body, set it here. For a pure astrocyte
-    # filament tree you may leave soma empty, but writing some formats may warn.
-    #
-    morpho.soma.points = [filamentPoints[root_index]]
-    morpho.soma.diameters = [1]
+    soma_points, soma_diameters = create_contour(radius=5)  # inherited from AstrocyteHeterogeneity (Softcode)
+    soma_center = points[root_index]
+    morpho.soma.points = soma_points + soma_center
+    morpho.soma.diameters = soma_diameters
+    morpho.soma.type = SomaType.SOMA_SIMPLE_CONTOUR  # HDF5 does not support single point somas
 
     visited_edges = set()
 
@@ -260,7 +258,7 @@ def build_morphology_from_filaments(
         inherited_diameter=initial_diameter,
     )
 
-    # Optional sanity check: all edges should be consumed in a tree-like graph.
+    # sanity check: all edges should be consumed in a tree-like graph.
     original_edges = {edge_key(a, b) for a, b in edges}
     unvisited = original_edges - visited_edges
 
@@ -325,20 +323,22 @@ class Dataset:
         ]
         return self
     
-    def to_pickle(self, path: str, version = "latest"):
-        """Saves the dataset to a pickle file.
+    def save(self, path: str, version = "latest", overwrite = False):
+        """Saves the dataset to one HDF5 file per cell and a metadata pickle file in the given directory.
 
         Parameters
         ----------
         path : str
-            The path to the file to save the dataset to.
+            The path to the directory to save the dataset to.
         version : str
             The version of the export format.
+        overwrite : bool
+            Whether to overwrite existing files. If False and files already exist, raises an error.
         """
-        self._logger.info(f"Saving dataset to pickle file {path}...")
+        self._logger.info(f"Saving dataset to directory {path}...")
         if version == "latest":
-            version = "1.1"
-        if version in ["1.0", "1.1"]:
+            version = "0.1"
+        if version == "0.1":
             data = {
                 "version": version,
                 "name": self._name,
@@ -349,35 +349,46 @@ class Dataset:
         else:
             raise ValueError(f"Invalid export version: {version}")
 
-        with open(path, "wb") as f:
+        if not os.path.exists(path):
+            os.makedirs(path)
+        # only allow saving to an empty directory to prevent accidental overwriting
+        if os.listdir(path):
+            if overwrite:
+                self._logger.info(f"Directory {path} is not empty. Overwriting existing files.")
+            else:
+                raise FileExistsError(f"Directory {path} is not empty. Set overwrite=True to overwrite existing files.")
+        with open(os.path.join(path, "metadata.pkl"), "wb") as f:
             pickle.dump(data, f)
-        self._logger.info(f"Finished saving dataset to pickle file {path}.")
+        for cell in self.cells.values():
+            cell.save_morphology_to_hdf(os.path.join(path, f"cell_{cell.ID}.h5"))
+        self._logger.info(f"Finished saving dataset to directory {path}.")
         return self
 
-    def from_pickle(self, path: str):
-        """Loads the dataset from a pickle file.
+    def load(self, path: str):
+        """Loads the dataset from the given directory containing a HDF5 file for each cell and a pickle file for metadata.
         Overwrites all previously loaded data.
-        
+
         Parameters
         ----------
         path : str
             The path to the file to load the dataset from.
         """
-        self._logger.info(f"Loading dataset from pickle file {path}...")
-        with open(path, "rb") as f:
+        self._logger.info(f"Loading dataset from directory {path}...")
+        with open(os.path.join(path, "metadata.pkl"), "rb") as f:
             data = pickle.load(f)
 
         version = data["version"]
-        if version in ["1.0", "1.1"]:
+        if version == "0.1":
             self._name = data["name"] if "name" in data else None
             self._path = data["path"] if "path" in data else None
             self._encapsulating_cuboid = data["encapsulating_cuboid"] if "encapsulating_cuboid" in data else None
             self._cells = {
-                cell_data["ID"]: Cell(logger = self._logger).from_dict(cell_data) for cell_data in data["cells"]
+                # loading morphology resets caches like ellipsoid, so we load morphology first and then call from_dict to set the metadata and caches again
+                cell_data["ID"]: Cell(id = cell_data["ID"], logger = self._logger).load_morphology_from_hdf(os.path.join(path, f"cell_{cell_data['ID']}.h5")).from_dict(cell_data) for cell_data in data["cells"]
             }
         else:
             raise ValueError(f"Invalid import version: {version}")
-        self._logger.info(f"Finished loading dataset from pickle file {path}. Loaded {len(self.cells)} cells.")
+        self._logger.info(f"Finished loading dataset from directory {path}. Loaded {len(self.cells)} cells.")
         return self
 
     def from_matlab(self, path: str, remove_edge_cells: bool = True, edge_cell_offset: float = 2., edge_cell_mode: str = "hardlimit", edge_cell_limit: int = 20, remove_artifact_cells: bool = False, min_sections: int = 1):
@@ -418,39 +429,50 @@ class Dataset:
         filamentPoints = matlabAndExcelData["vFilamentsPoints"]
         filamentEdges = matlabAndExcelData["vFilamentsEdges"]
 
+        skipped_trivial_cells = 0
+        skipped_cells_due_to_errors = 0
         for cellID in range(len(filamentPoints)):
             self._logger.info(f"Loading cell {cellID}...")
-            cell_filamentPoints = np.array(filamentPoints[cellID])
-            cell_filamentEdges = np.array(filamentEdges[cellID], dtype=int)
+            try:
+                cell_filamentPoints = np.array(filamentPoints[cellID])
+                cell_filamentEdges = np.array(filamentEdges[cellID], dtype=int)
 
-            # skip trivial cells
-            if len(cell_filamentPoints) < 4:
+                # skip trivial cells
+                if len(cell_filamentPoints) < 4:
+                    skipped_trivial_cells += 1
+                    continue
+
+                filamentID = 100000000 + cellID  # by definition of dataset
+                # position of branching points
+                cell_branchPositions_df = branchPositions.loc[branchPositions.FilamentID == filamentID].sort_values("ID", ignore_index = True)
+                # diameter at branching points
+                cell_branchDiameters_df = branchDiameters.loc[branchDiameters.FilamentID == filamentID].sort_values("ID", ignore_index = True)
+
+                cell_branchPositions = cell_branchPositions_df.copy()[
+                    ["PtPositionX", "PtPositionY", "PtPositionZ"]
+                ].to_numpy()
+                cell_branchDiameters = cell_branchDiameters_df.copy()["PtDiameter"].to_numpy()
+
+                morphology = build_morphology_from_filaments(filamentPoints=cell_filamentPoints,
+                                                            filamentEdges=cell_filamentEdges,
+                                                            branchPositions=cell_branchPositions,
+                                                            branchDiameters=cell_branchDiameters,
+                                                            logger=self._logger)
+                
+                self._logger.debug(f"-- making cell morphology immutable")
+                # convert to immutable: more efficient at working with astrocyte
+                # to change the morphology of the astrocyte again, the morphology
+                # needs to be converted to morphio.mut.Morphology again.
+                morphology = morphology.as_immutable()
+                self._cells[cellID] = Cell(morphology, ID=cellID, logger=self._logger)
+            except Exception as e:
+                self._logger.error(f"Error loading cell {cellID}: {e}")
+                skipped_cells_due_to_errors += 1
                 continue
-
-            filamentID = 100000000 + cellID  # by definition of dataset
-            # position of branching points
-            cell_branchPositions_df = branchPositions.loc[branchPositions.FilamentID == filamentID].sort_values("ID", ignore_index = True)
-            # diameter at branching points
-            cell_branchDiameters_df = branchDiameters.loc[branchDiameters.FilamentID == filamentID].sort_values("ID", ignore_index = True)
-
-            cell_branchPositions = cell_branchPositions_df.copy()[
-                ["PtPositionX", "PtPositionY", "PtPositionZ"]
-            ].to_numpy()
-            cell_branchDiameters = cell_branchDiameters_df.copy()["PtDiameter"].to_numpy()
-
-            morphology = build_morphology_from_filaments(filamentPoints=cell_filamentPoints,
-                                                         filamentEdges=cell_filamentEdges,
-                                                         branchPositions=cell_branchPositions,
-                                                         branchDiameters=cell_branchDiameters,
-                                                         logger=self._logger)
-            
-            self._logger.debug(f"-- making cell morphology immutable")
-            # convert to immutable: more efficient at working with astrocyte
-            # to change the morphology of the astrocyte again, the morphology
-            # needs to be converted to morphio.mut.Morphology again.
-            morphology = morphology.as_immutable()
-            self._cells[cellID] = Cell(morphology, ID=cellID, logger=self._logger)
             self._logger.info(f"Cell {cellID} loaded.")
+
+        self._logger.info(f"Skipped {skipped_trivial_cells} trivial cells with less than 4 filament points.")
+        self._logger.info(f"Skipped {skipped_cells_due_to_errors} cells due to errors during loading.")
 
         if remove_edge_cells:
             self.remove_edge_cells(offset = edge_cell_offset, mode = edge_cell_mode, limit = edge_cell_limit)

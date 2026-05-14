@@ -2,7 +2,7 @@ import logging
 import numpy as np
 import pandas as pd
 from morphio import Morphology
-from morphio.mut import Morphology as MutMorphology
+from morphio.mut import Morphology as MutableMorphology
 
 from numpy.typing import NDArray
 
@@ -14,14 +14,17 @@ class Cell:
     Functions that don't obviously return something else allow chaining, e.g.
     `Cell().from_dict(cell_data)._find_branches().to_dict()`
     """
-    def __init__(self, 
-                 morphology: Morphology,
+    def __init__(self,
+                 morphology: Morphology = None,
                  ID: int = None,
                  logger: logging.Logger = None):
         self._logger = logger or logging.getLogger(__name__)
 
         self._morphology = morphology  # type: Morphology
         self._ID = ID  # type: int
+        
+        if type(morphology) == str:
+            self.load_morphology_from_hdf(morphology)
 
         # caches
         self._section_depths = None  # type: dict[int, int]
@@ -33,12 +36,15 @@ class Cell:
         return self._morphology
     @morphology.setter
     def morphology(self, val: Morphology):
-        if type(val) == MutMorphology:
+        if type(val) == MutableMorphology:
             raise TypeError("new morphology must be immutable")
         assert type(val) == Morphology, "new morphology must be of type morphio.Morphology"
-        
+
+        self._morphology = val
         # reset caches
         self._section_depths = None
+        self._terminal_points_with_depth = None
+        self._ellipsoid = None
 
     @property
     def ID(self) -> int:
@@ -153,65 +159,52 @@ class Cell:
         self._logger.info(f"Finished calculating ellipsoid for cell {self.ID}.")
         return self
 
+    def save_morphology_to_hdf(self, path: str):
+        """Saves the cell's morphology to an HDF5 file."""
+        mutmorpho = MutableMorphology(self.morphology)  # only mutable morphologies can be written to file
+        mutmorpho.write(path)
+        return self
+
     def to_dict(self, version = "latest"):
-        """Returns a dict containing the cell data.
-        
+        """Returns a dict containing the cell metadata excluding the morphology.
+
         Parameters
         ----------
         version : str
             Version of the export format. Consistent with `from_dict()`.
         """
         if version == "latest":
-            version = "1.1"
-        if version == "1.1":
+            version = "0.1"
+        if version == "0.1":
             return {
                 "version": version,
                 "ID": self.ID,
-                "filamentPoints": self._filamentPoints,
-                "filamentEdges": self._filamentEdges,
-                "branchPositions": self._branchPositions,
-                "fine_branches": self._fine_branches,
-                "rough_branches": self._rough_branches,
-                "ellipsoid": self._ellipsoid
-            }
-        elif version == "1.0":
-            return {
-                "version": version,
-                "ID": self.ID,
-                "filamentPoints": self._filamentPoints,
-                "filamentEdges": self._filamentEdges,
-                "branches": self._branchPositions,
-                "fine_branches": self._fine_branches,
-                "rough_branches": self._rough_branches,
+                "section_depths": self._section_depths,
+                "terminal_points_with_depth": self._terminal_points_with_depth,
                 "ellipsoid": self._ellipsoid
             }
         else:
             raise ValueError(f"Unsupported dict export version: {version}")
 
+    def load_morphology_from_hdf(self, path: str):
+        """Loads the cell's morphology from an HDF5 file."""
+        self._logger.debug(f"Loading morphology for cell {self.ID} from {path}")
+        self.morphology = Morphology(path)
+        return self
+
     def from_dict(self, data: dict):
-        """Loads the cell data from a dict.
+        """Loads the cell metadata from a dict.
 
         Parameters
         ----------
         data : dict
-            Contains the cell data and a version number consistent with `to_dict()`.
+            Contains the cell metadata and a version number consistent with `to_dict()`.
         """
         version = data["version"]
-        if version == "1.1":
+        if version == "0.1":
             self._ID = data["ID"]
-            self._filamentPoints = data["filamentPoints"]
-            self._filamentEdges = data["filamentEdges"]
-            self._branchPositions = data["branchPositions"]
-            self._fine_branches = data["fine_branches"]
-            self._rough_branches = data["rough_branches"]
-            self._ellipsoid = data["ellipsoid"]
-        elif version == "1.0":
-            self._ID = data["ID"]
-            self._filamentPoints = data["filamentPoints"]
-            self._filamentEdges = data["filamentEdges"]
-            self._branchPositions = data["branches"]
-            self._fine_branches = data["fine_branches"]
-            self._rough_branches = data["rough_branches"]
+            self._section_depths = data["section_depths"]
+            self._terminal_points_with_depth = data["terminal_points_with_depth"]
             self._ellipsoid = data["ellipsoid"]
         else:
             raise ValueError(f"Unsupported version of dict import: {version}")
