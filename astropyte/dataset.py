@@ -384,7 +384,7 @@ class Dataset:
             self._encapsulating_cuboid = data["encapsulating_cuboid"] if "encapsulating_cuboid" in data else None
             self._cells = {
                 # loading morphology resets caches like ellipsoid, so we load morphology first and then call from_dict to set the metadata and caches again
-                cell_data["ID"]: Cell(id = cell_data["ID"], logger = self._logger).load_morphology_from_hdf(os.path.join(path, f"cell_{cell_data['ID']}.h5")).from_dict(cell_data) for cell_data in data["cells"]
+                cell_data["ID"]: Cell(ID = cell_data["ID"], logger = self._logger).load_morphology_from_hdf(os.path.join(path, f"cell_{cell_data['ID']}.h5")).from_dict(cell_data) for cell_data in data["cells"]
             }
         else:
             raise ValueError(f"Invalid import version: {version}")
