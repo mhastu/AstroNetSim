@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 
 from .cell import Cell
 
-def plot_cell(ax: plt.Axes, cell: Cell, color: str = "r", plot_ellipse: bool = False, mode: str = "rough", annotate: bool = False):
+def plot_cell(ax: plt.Axes, cell: Cell, color: str = "r", plot_ellipse: bool = False, mode: str = "skeleton", annotate: bool = False):
     """Plots the cell on the given axis.
     Parameters
     ----------
@@ -16,92 +16,178 @@ def plot_cell(ax: plt.Axes, cell: Cell, color: str = "r", plot_ellipse: bool = F
     plot_ellipse : bool
         Whether to plot the minimum volume encapsulating ellipsoid (MVEE) of the cell.
     mode : str
-        The mode to plot the cell in. Choose from "rough", "fine", or "scatter".
-        "rough": Plots the rough branches of the cell.
-        "fine": Plots the fine branches of the cell.
-        "scatter": Plots the branching points of the cell as scatter points.
+        The mode to plot the cell in. Choose from "skeleton", "section", or "scatter".
+        "skeleton": Plots sections as straight cylinders between the branching points of the cell.
+        "segment": Plots all segments of the cell as cylinders.
+        "scatter": Plots all section points of the cell as scatter points.
     annotate : bool
-        Whether to annotate the branches with their ID and depth. Only works in "rough" mode.
+        Whether to annotate the branches with their ID and depth. Only works in "skeleton" mode.
     """
 
-    if mode not in ["rough", "fine", "scatter"]:
-        raise ValueError("Invalid mode. Choose from 'rough', 'fine', or 'scatter'.")
-    
-    if mode == "rough":
-        for id, branch in cell.rough_branches.items():
-            x = np.array(branch["PtPositionX"])
-            y = np.array(branch["PtPositionY"])
-            z = np.array(branch["PtPositionZ"])
-            dia = np.array(branch["PtDiameter"])
-            depth = np.array(branch["Depth"])
+    if mode not in ["skeleton", "section", "scatter"]:
+        raise ValueError("Invalid mode. Choose from 'skeleton', 'section', or 'scatter'.")
 
-            #https://stackoverflow.com/questions/38079366/matplotlib-line3dcollection-multicolored-line-edges-are-jagged
-            points = np.array([x, y, z]).T.reshape(-1, 1, 3)
-            segments = np.concatenate([points[:-1], points[1:]], axis=1)
+    if mode == "skeleton":
+        for section in cell.morphology.iter():
+            points = np.asarray(section.points)
 
-            for ii in range(len(x)-1):
-                segii=segments[ii]
-                ax.plot(segii[:,0],segii[:,1],segii[:,2], "-",color= color,linewidth=dia[ii], alpha = 1 / (depth[ii] + 1))
-                if annotate:
-                    if ii == 0:
-                        ax.text(segii[0,0],segii[0,1],segii[0,2], str((id, depth[ii])))
-                        pass
-    elif mode == "fine":
-        for id, branch in cell.fine_branches.items():
-            x = np.array(branch[:, 0])
-            y = np.array(branch[:, 1])
-            z = np.array(branch[:, 2])
+            if len(points) < 2:
+                continue
 
-            #https://stackoverflow.com/questions/38079366/matplotlib-line3dcollection-multicolored-line-edges-are-jagged
-            points = np.array([x, y, z]).T.reshape(-1, 1, 3)
-            segments = np.concatenate([points[:-1], points[1:]], axis=1)
-            for ii in range(len(x)-1):
-                segii=segments[ii]
-                ax.plot(segii[:,0],segii[:,1],segii[:,2], "-",color= color) #, alpha = 1 / (depth[ii] + 1)
+            start = points[0]
+            end = points[-1]
+
+            diameters = np.asarray(section.diameters)
+
+            # representative section diameter
+            linewidth = np.mean(diameters) if len(diameters) > 0 else 1.0
+
+            alpha = 1.0 / (cell.section_depths[section.id] + 1)
+
+            ax.plot(
+                [start[0], end[0]],
+                [start[1], end[1]],
+                [start[2], end[2]],
+                "-",
+                color=color,
+                linewidth=linewidth,
+                alpha=alpha,
+            )
+
+            if annotate:
+                midpoint = 0.5 * (start + end)
+                ax.text(
+                    midpoint[0],
+                    midpoint[1],
+                    midpoint[2],
+                    f"({section.id}, d={cell.section_depths[section.id]})",
+                )
+    elif mode == "segment":
+        for section in cell.morphology.iter():
+            points = np.asarray(section.points)
+
+            if len(points) < 2:
+                continue
+
+            x = points[:, 0]
+            y = points[:, 1]
+            z = points[:, 2]
+
+            diameters = np.asarray(section.diameters)
+
+            # MorphIO stores diameters per point
+            # Use diameter of segment start point
+            for i in range(len(points) - 1):
+
+                linewidth = diameters[i] if len(diameters) > i else 1.0
+
+                alpha = 1.0 / (cell.section_depths[section.id] + 1)
+
+                ax.plot(
+                    x[i:i+2],
+                    y[i:i+2],
+                    z[i:i+2],
+                    "-",
+                    color=color,
+                    linewidth=linewidth,
+                    alpha=alpha,
+                )
+
+            if annotate:
+                p0 = points[0]
+
+                ax.text(
+                    p0[0],
+                    p0[1],
+                    p0[2],
+                    f"({section.id}, d={cell.section_depths[section.id]})",
+                )
+
     elif mode == "scatter":
-        x = np.array(cell.BranchingPointsData["PtPositionX"])
-        y = np.array(cell.BranchingPointsData["PtPositionY"])
-        z = np.array(cell.BranchingPointsData["PtPositionZ"])
-        depth = np.array(cell.BranchingPointsData["Depth"])
-        ax.scatter(x, y, z) #, alpha = 1/(depth+ 1)
-    
+        all_points = []
+
+        # soma
+        if cell.morphology.soma is not None:
+            all_points.append(np.asarray(cell.morphology.soma.points))
+
+        # sections
+        for section in cell.morphology.iter():
+            all_points.append(np.asarray(section.points))
+
+        if len(all_points) > 0:
+            pts = np.vstack(all_points)
+            ax.scatter(
+                pts[:, 0],
+                pts[:, 1],
+                pts[:, 2],
+                color=color,
+            )
+
     if plot_ellipse:
-        # rx, ry, rz, angle0, angle1, angle2, center0, center1, center2 = cell.ellipsoid
+        # shapes (3,), (3,), (3, 3)
         center, radii, rotation = cell.ellipsoid
 
         # parameter grid
-        u = np.linspace(0, 2 * np.pi, 60)
-        v = np.linspace(0, np.pi, 60)
+        u = np.linspace(0, 2 * np.pi, 60)  # shape (N,)
+        v = np.linspace(0, np.pi, 60)  # shape (M,)
 
         # ellipsoid in local coordinates
-        x = radii[0] * np.outer(np.cos(u), np.sin(v))
-        y = radii[1] * np.outer(np.sin(u), np.sin(v))
-        z = radii[2] * np.outer(np.ones_like(u), np.cos(v))
+        x = radii[0] * np.outer(np.cos(u), np.sin(v))  # shape (N, M)
+        y = radii[1] * np.outer(np.sin(u), np.sin(v))  # shape (N, M)
+        z = radii[2] * np.outer(np.ones_like(u), np.cos(v))  # shape (N, M)
 
-        # stack and transform all points at once
-        xyz = np.stack((x, y, z), axis=-1)  # shape (60, 60, 3)
-        xyz_rot = xyz @ rotation.T + center  # rotate + translate
+        # rotate + translate
+        xyz = np.stack((x, y, z), axis=-1)  # shape (N, M, 3)
+        xyz_rot = xyz @ rotation.T + center  # shape (N, M, 3)
 
-        x = xyz_rot[..., 0]
-        y = xyz_rot[..., 1]
-        z = xyz_rot[..., 2]
+        x = xyz_rot[..., 0]  # shape (N, M)
+        y = xyz_rot[..., 1]  # shape (N, M)
+        z = xyz_rot[..., 2]  # shape (N, M)
 
-        ax.plot_surface(x, y, z,  rstride=3, color = "b", cstride=3, linewidth=0.1, alpha=0.2, shade=True)
+        ax.plot_surface(
+            x,
+            y,
+            z,
+            rstride=3,
+            cstride=3,
+            color="b",
+            linewidth=0.1,
+            alpha=0.2,
+            shade=True,
+        )
 
-        #plot principal axes:
+        # principal axes
         point1 = np.array([0, 0, radii[2]])
         point2 = np.array([0, radii[1], 0])
         point3 = np.array([radii[0], 0, 0])
 
-        point_rot1 = np.dot(point1, rotation) + center
-        point_rot2 = np.dot(point2, rotation) + center
-        point_rot3 = np.dot(point3, rotation) + center
+        point_rot1 = rotation @ point1 + center
+        point_rot2 = rotation @ point2 + center
+        point_rot3 = rotation @ point3 + center
 
-        ax.plot([center[0], point_rot1[0]], [center[1], point_rot1[1]], [center[2], point_rot1[2]], color = "b")
-        ax.plot([center[0], point_rot2[0]], [center[1], point_rot2[1]], [center[2], point_rot2[2]], color = "g")
-        ax.plot([center[0], point_rot3[0]], [center[1], point_rot3[1]], [center[2], point_rot3[2]], color = "m")
+        ax.plot(
+            [center[0], point_rot1[0]],
+            [center[1], point_rot1[1]],
+            [center[2], point_rot1[2]],
+            color="b",
+        )
 
-def plot_cell_rot(fig: plt.Figure, cell: Cell, mode: str = "rough", plot_ellipse: bool = True):
+        ax.plot(
+            [center[0], point_rot2[0]],
+            [center[1], point_rot2[1]],
+            [center[2], point_rot2[2]],
+            color="g",
+        )
+
+        ax.plot(
+            [center[0], point_rot3[0]],
+            [center[1], point_rot3[1]],
+            [center[2], point_rot3[2]],
+            color="m",
+        )
+
+
+def plot_cell_rot(fig: plt.Figure, cell: Cell, mode: str = "skeleton", plot_ellipse: bool = True):
     """Plots the cell in different views with the option to plot the minimum volume encapsulating ellipsoid (MVEE) of the cell.
     Parameters
     ----------
