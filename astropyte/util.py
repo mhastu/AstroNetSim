@@ -52,7 +52,7 @@ def mvee(points: np.array, tolerance: float = 1e-2):
     return center, radii, rotation
 
 
-def points_inside_ellipsoid(points, center, radii, rotation, tolerance) -> NDArray[np.bool_]:
+def points_inside_ellipsoid(points, center, radii, rotation, tolerance: float = 1e-8) -> NDArray[np.bool_]:
     """
     Returns the mask (np.array(bool)) of all points inside the ellipsoid.
 
