@@ -4,6 +4,7 @@ launch.json
 
 # output files
 *.png
+results/*
 
 # data files from matlab
 diameterData.csv
