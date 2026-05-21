@@ -17,8 +17,7 @@ from .util import create_contour
 def build_morphology_from_filaments(
         filamentPoints,
         filamentEdges,
-        branchPositions,
-        branchDiameters,
+        branchPoints,
         *,
         root_index=None,
         root_diameter=1.0,
@@ -37,12 +36,8 @@ def build_morphology_from_filaments(
     filamentEdges : array-like, shape (M, 2)
         Undirected edges, each row contains two point indices.
 
-    branchPositions : array-like, shape (B, 3)
-        Coordinates of branching points. Must match points in filamentPoints.
-
-    branchDiameters : array-like, shape (B,)
-        Diameter assigned to each branch point. All downstream sections starting
-        at that branch point get this diameter.
+    branchPoints : pandas.DataFrame with columns ["ID", "FilamentID", "Depth", "PtPositionX", "PtPositionY", "PtPositionZ", "PtDiameter"]
+        Coordinates, depth and diameter at branching points. Must match points in filamentPoints.
 
     root_index : int or None
         Index of the root point. If None, an endpoint is chosen automatically.
@@ -54,7 +49,7 @@ def build_morphology_from_filaments(
         Section type to use. default: SectionType.glia_process
 
     atol : float
-        Tolerance for matching branchPositions to filamentPoints.
+        Tolerance for matching branchPoints positions to filamentPoints.
 
     Returns
     -------
@@ -65,20 +60,17 @@ def build_morphology_from_filaments(
 
     points = np.asarray(filamentPoints, dtype=float)
     edges = np.asarray(filamentEdges, dtype=int)
-    branch_positions = np.asarray(branchPositions, dtype=float)
-    branch_diameters = np.asarray(branchDiameters, dtype=float)
+    branch_positions = branchPoints[["PtPositionX", "PtPositionY", "PtPositionZ"]].to_numpy(dtype=float)
+    branch_diameters = branchPoints["PtDiameter"].to_numpy(dtype=float)
 
     if points.ndim != 2 or points.shape[1] != 3:
         raise ValueError("filamentPoints must have shape (N, 3).")
 
     if edges.ndim != 2 or edges.shape[1] != 2:
         raise ValueError("filamentEdges must have shape (M, 2).")
-
-    if branch_positions.ndim != 2 or branch_positions.shape[1] != 3:
-        raise ValueError("branchPositions must have shape (B, 3).")
-
-    if len(branch_positions) != len(branch_diameters):
-        raise ValueError(f"branchPositions ({len(branch_positions)}) and branchDiameters ({len(branch_diameters)}) must have the same length.")
+    
+    if np.any(np.isnan(branch_diameters)) or np.any(branch_diameters < 0):
+        raise ValueError("There must be a valid diameter for each branch point.")
 
     n_points = len(points)
 
@@ -371,7 +363,7 @@ class Dataset:
         Parameters
         ----------
         path : str
-            The path to the file to load the dataset from.
+            The path to the directory to load the dataset from.
         """
         self._logger.info(f"Loading dataset from directory {path}...")
         with open(os.path.join(path, "metadata.pkl"), "rb") as f:
@@ -401,7 +393,7 @@ class Dataset:
             The path to the dataset directory. Assumes files to be present:
             - diameterData.csv (Generated in Matlab)
             - positionData.csv (Generated in Matlab)
-            - matlab_and_excel_data.mat
+            - dataset_[dataset_name].mat (contains diameterData and positionData as tables, which can't be loaded in Python)
         remove_edge_cells : bool
             Whether cells that are too close to the overall dataset boundary (encapsulating cuboid) should be removed
         edge_cell_offset : float
@@ -423,11 +415,47 @@ class Dataset:
         self._path = path
 
         # load raw data
-        branchDiameters = pd.read_csv(os.path.join(path, "diameterData.csv"))
-        branchPositions = pd.read_csv(os.path.join(path, "positionData.csv"))
-        matlabAndExcelData = read_mat(os.path.join(path, "matlab_and_excel_data.mat"))  # type: dict[str, NDArray]
-        filamentPoints = matlabAndExcelData["vFilamentsPoints"]
-        filamentEdges = matlabAndExcelData["vFilamentsEdges"]
+        diameters = pd.read_csv(os.path.join(path, "diameterData.csv"))
+        diameterPositions = pd.read_csv(os.path.join(path, "positionData.csv"))
+        mat = read_mat(os.path.join(path, f"dataset_{self.name}.mat"))  # type: dict[str, NDArray]
+        filamentPoints = mat["vFilamentsPoints"]
+        filamentEdges = mat["vFilamentsEdges"]
+
+        # Merge tables on ID
+        # left join keeps all rows from positionData
+        branchPoints = pd.merge(
+            diameterPositions,
+            diameters,
+            on="ID",
+            how="left",
+            suffixes=("_pos", "_diam")
+        )
+
+        # Check whether Depth values match for rows where diameter data exists
+        depth_mismatch = branchPoints[
+            branchPoints["Depth_diam"].notna() &
+            (branchPoints["Depth_pos"] != branchPoints["Depth_diam"])
+        ]
+        if not depth_mismatch.empty:
+            raise ValueError(
+                f"Depth values do not match for some rows:\n{depth_mismatch[['ID', 'Depth_pos', 'Depth_diam']]}"
+            )
+        else:
+            branchPoints["Depth"] = branchPoints["Depth_pos"]
+            branchPoints = branchPoints.drop(columns=["Depth_pos", "Depth_diam"])
+
+        # Check FilamentID consistency
+        filament_mismatch = branchPoints[
+            branchPoints["FilamentID_diam"].notna() &
+            (branchPoints["FilamentID_pos"] != branchPoints["FilamentID_diam"])
+        ]
+        if not filament_mismatch.empty:
+            raise ValueError(
+                f"FilamentID values do not match for some rows:\n{filament_mismatch[['ID', 'FilamentID_pos', 'FilamentID_diam']]}"
+            )
+        else:
+            branchPoints["FilamentID"] = branchPoints["FilamentID_pos"]
+            branchPoints = branchPoints.drop(columns=["FilamentID_pos", "FilamentID_diam"])
 
         skipped_trivial_cells = 0
         skipped_cells_due_to_errors = 0
@@ -443,20 +471,12 @@ class Dataset:
                     continue
 
                 filamentID = 100000000 + cellID  # by definition of dataset
-                # position of branching points
-                cell_branchPositions_df = branchPositions.loc[branchPositions.FilamentID == filamentID].sort_values("ID", ignore_index = True)
-                # diameter at branching points
-                cell_branchDiameters_df = branchDiameters.loc[branchDiameters.FilamentID == filamentID].sort_values("ID", ignore_index = True)
-
-                cell_branchPositions = cell_branchPositions_df.copy()[
-                    ["PtPositionX", "PtPositionY", "PtPositionZ"]
-                ].to_numpy()
-                cell_branchDiameters = cell_branchDiameters_df.copy()["PtDiameter"].to_numpy()
+                # position and diameter of branching points
+                cell_branchPoints = branchPoints.loc[branchPoints.FilamentID == filamentID]
 
                 morphology = build_morphology_from_filaments(filamentPoints=cell_filamentPoints,
                                                             filamentEdges=cell_filamentEdges,
-                                                            branchPositions=cell_branchPositions,
-                                                            branchDiameters=cell_branchDiameters,
+                                                            branchPoints=cell_branchPoints,
                                                             logger=self._logger)
                 
                 self._logger.debug(f"-- making cell morphology immutable")
@@ -466,7 +486,7 @@ class Dataset:
                 morphology = morphology.as_immutable()
                 self._cells[cellID] = Cell(morphology, ID=cellID, logger=self._logger)
             except Exception as e:
-                self._logger.error(f"Error loading cell {cellID}: {e}")
+                self._logger.error(f"{type(e).__name__} while loading cell {cellID}: {e}")
                 skipped_cells_due_to_errors += 1
                 continue
             self._logger.info(f"Cell {cellID} loaded.")
