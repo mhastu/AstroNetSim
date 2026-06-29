@@ -17,16 +17,14 @@ from .util import create_contour
 def build_morphology_from_filaments(
         filamentPoints,
         filamentEdges,
-        branchPoints,
-        *,
-        root_index=None,
-        root_diameter=1.0,
+        diameters,
+        soma_index=0,
         section_type=SectionType.glia_process,
         atol=1e-3,
         logger=None
     ):
     """
-    Convert filament point/edge data into a morphio.mut.Morphology.
+    Convert filament point/edge data into a morphio.mut.Morphology. The soma is stored as a simple 2D contour with radius 5.
 
     Parameters
     ----------
@@ -36,83 +34,113 @@ def build_morphology_from_filaments(
     filamentEdges : array-like, shape (M, 2)
         Undirected edges, each row contains two point indices.
 
-    branchPoints : pandas.DataFrame with columns ["ID", "FilamentID", "Depth", "PtPositionX", "PtPositionY", "PtPositionZ", "PtDiameter"]
+    diameters : pandas.DataFrame with columns ["ID", "FilamentID", "Depth", "PtPositionX", "PtPositionY", "PtPositionZ", "PtDiameter"]
         Coordinates, depth and diameter at branching points. Must match points in filamentPoints.
 
-    root_index : int or None
-        Index of the root point. If None, an endpoint is chosen automatically.
-
-    root_diameter : float
-        Diameter used for the first section if the root is not a branch point.
+    soma_index : int or None
+        Index of the soma in filamentPoints. Default: 0.
 
     section_type : morphio.SectionType
-        Section type to use. default: SectionType.glia_process
+        Section type to use. Default: SectionType.glia_process
 
     atol : float
-        Tolerance for matching branchPoints positions to filamentPoints.
+        Tolerance for matching diameter positions to filamentPoints. Default: 1e-3
+    
+    logger : logging.Logger
+        logger to use
 
     Returns
     -------
     morphio.mut.Morphology
     """
+    # explanation of the algorithm:
+    # 1. build adjacency (list all connected neighbors for each point). degree of a point = number of neighbors
+    # 2. starting at an arbitrary branch point (degree > 2):
+    #   - recursively trace through degree-2 nodes (using adjacency) until
+    #     a boundary node is reached (degree != 2).
+    #   - for each section (from boundary node to boundary node), interpolate diameters along the
+    #     path using the coordinates and the branch diameters at the endpoints.
+
+    # ------------------------------------------------------------------
+    # 0. Argument validation
+    # ------------------------------------------------------------------
     if logger is None:
         logger = logging.getLogger("none")
 
-    points = np.asarray(filamentPoints, dtype=float)
+    nodes = np.asarray(filamentPoints, dtype=float)
     edges = np.asarray(filamentEdges, dtype=int)
-    branch_positions = branchPoints[["PtPositionX", "PtPositionY", "PtPositionZ"]].to_numpy(dtype=float)
-    branch_diameters = branchPoints["PtDiameter"].to_numpy(dtype=float)
 
-    if points.ndim != 2 or points.shape[1] != 3:
+    # remove invalid diameter entries (NaN coordinates, NaN diameter, negative diameter)
+    valid_diameters_nan_coordinates = diameters.dropna(subset=["PtPositionX", "PtPositionY", "PtPositionZ"])
+    n_invalid_nan_coordinates = len(valid_diameters_nan_coordinates) - len(diameters)
+    if n_invalid_nan_coordinates > 0:
+        logger.warning(f"Removed {n_invalid_nan_coordinates} invalid diameter entries (NaN coordinates).")
+    valid_diameters_nan_diameter = valid_diameters_nan_coordinates.dropna(subset=["PtDiameter"])
+    n_invalid_nan_diameter = len(valid_diameters_nan_diameter) - len(valid_diameters_nan_coordinates)
+    if n_invalid_nan_diameter > 0:
+        logger.warning(f"Removed {n_invalid_nan_diameter} invalid diameter entries (NaN diameter).")
+    valid_diameters_negative = valid_diameters_nan_diameter[valid_diameters_nan_diameter["PtDiameter"] >= 0]
+    n_invalid_negative = len(valid_diameters_negative) - len(valid_diameters_nan_diameter)
+    if n_invalid_negative > 0:
+        logger.warning(f"Removed {n_invalid_negative} invalid diameter entries (negative diameter).")
+    diameters = valid_diameters_negative
+
+    diameter_positions = diameters[["PtPositionX", "PtPositionY", "PtPositionZ"]].to_numpy(dtype=float)
+    diameter_values = diameters["PtDiameter"].to_numpy(dtype=float)
+
+    if nodes.ndim != 2 or nodes.shape[1] != 3:
         raise ValueError("filamentPoints must have shape (N, 3).")
 
     if edges.ndim != 2 or edges.shape[1] != 2:
         raise ValueError("filamentEdges must have shape (M, 2).")
     
-    if np.any(np.isnan(branch_diameters)) or np.any(branch_diameters < 0):
-        raise ValueError("There must be a valid diameter for each branch point.")
+    if np.any(np.isnan(diameter_values)) or np.any(diameter_values < 0):
+        raise ValueError("There must be a valid diameter for each diameter entry.")
 
-    n_points = len(points)
-
-    if np.any(edges < 0) or np.any(edges >= n_points):
+    if np.any(edges < 0) or np.any(edges >= len(nodes)):
         raise ValueError("filamentEdges contains indices outside filamentPoints.")
 
     # ------------------------------------------------------------------
-    # 1. Map branch positions back to filament point indices
+    # 1. Map diameter positions to filament points
     # ------------------------------------------------------------------
-    logger.debug(f"-- mapping branch positions back to filament point indices")
+    logger.debug(f"-- mapping diameter positions to filament points")
 
-    tree = cKDTree(points)
+    # search is much faster with cKDTree
+    # cKDTree has nothing to do with the morphio.Morphology
+    tree = cKDTree(nodes)
 
-    distances, indices = tree.query(
-        branch_positions,
+    queried_distances, queried_diameter_indices = tree.query(
+        diameter_positions,
         k=1,
         distance_upper_bound=atol,
     )
 
-    unmatched = np.isinf(distances)
+    unmatched = np.isinf(queried_distances)
 
     if np.any(unmatched):
         i = int(np.where(unmatched)[0][0])
-        closest_distance, closest_index = tree.query(branch_positions[i], k=1)
+        closest_distance, closest_index = tree.query(diameter_positions[i], k=1)
 
         raise ValueError(
-            f"Branch position {branch_positions[i]} does not match any filament point "
+            f"Diameter position {diameter_positions[i]} does not match any filament point "
             f"within tolerance {atol}. Closest distance: {closest_distance}, "
             f"closest point index: {closest_index}"
         )
 
-    branch_diameter_by_index = {
+    diameter_by_index = {
         int(idx): float(diam)
-        for idx, diam in zip(indices, branch_diameters)
+        for idx, diam in zip(queried_diameter_indices, diameter_values)
     }
 
-    branch_indices = set(branch_diameter_by_index.keys())
+    diameter_indices = set(diameter_by_index.keys())
+
+    if len(diameter_indices) != len(queried_diameter_indices):
+        raise ValueError("Multiple diameter positions map to the same filament point.")
 
     # ------------------------------------------------------------------
     # 2. Build undirected adjacency
     # ------------------------------------------------------------------
-    logger.debug(f"-- building unidirected adjacency")
+    logger.debug(f"-- building undirected adjacency")
     adjacency = defaultdict(list)
 
     for a, b in edges:
@@ -125,65 +153,57 @@ def build_morphology_from_filaments(
         adjacency[a].append(b)
         adjacency[b].append(a)
 
-    degrees = {i: len(adjacency[i]) for i in range(n_points)}
+    # degree = number of neighbors for each point, used to identify endpoints and branch points
+    degrees = {i: len(adjacency[i]) for i in range(len(nodes))}
+
+    # validate that all diameter positions are at section boundary nodes
+    for idx in diameter_indices:
+        if degrees.get(idx, 0) == 2:
+            raise ValueError(f"Diameter position at index {idx} has degree 2.")
+    # validate that all section boundary nodes in the graph have a corresponding diameter
+    for idx in degrees:
+        if degrees[idx] > 2 and idx not in diameter_indices:
+            raise ValueError(f"Filament point at index {idx} has degree {degrees[idx]} > 2 (i.e. branch point) but no corresponding diameter. Cannot interpolate diameters along sections without branch diameters at section boundaries.")
+    # use a fallback diameter of 0 for all endpoints (degree 1) that do not have a corresponding point in diameterPositions
+    missing_endpoint_diameters = [idx for idx in degrees if degrees[idx] == 1 and idx not in diameter_indices]
+    if missing_endpoint_diameters:
+        logger.info(f"{len(missing_endpoint_diameters)} endpoints (degree 1) do not have a corresponding point in diameterPositions. Using fallback diameter 0 for these endpoints.")
+        for idx in missing_endpoint_diameters:
+            diameter_by_index[idx] = 0.0
+            diameter_indices.add(idx)
+    
+    section_boundary_indices = set(i for i in degrees if degrees[i] != 2)
+    if diameter_indices != section_boundary_indices:
+        raise ValueError("All section boundary nodes (degree != 2) must have a corresponding diameter.")
 
     # ------------------------------------------------------------------
-    # 3. Choose a root if none is given
+    # 3. Build morphology
     # ------------------------------------------------------------------
-    logger.debug(f"-- choosing root point")
-    if root_index is None:
-        endpoints = [i for i, d in degrees.items() if d == 1]
-
-        if endpoints:
-            root_index = endpoints[0]
-        else:
-            # Fallback for closed or unusual structures.
-            root_index = 0
-    else:
-        root_index = int(root_index)
-
-    if root_index < 0 or root_index >= n_points:
-        raise ValueError("root_index is outside filamentPoints.")
-
-    # A MorphIO section boundary is usually:
-    # - root
-    # - branch point
-    # - endpoint
-    # - any graph node with degree != 2
-    def is_boundary_node(i):
-        return (
-            i == root_index
-            or i in branch_indices
-            or degrees.get(i, 0) != 2
-        )
 
     morpho = MutableMorphology()
 
+    # create soma as a contour
     soma_points, soma_diameters = create_contour(radius=5)  # inherited from AstrocyteHeterogeneity (Softcode)
-    soma_center = points[root_index]
+    soma_center = nodes[soma_index]
     morpho.soma.points = soma_points + soma_center
     morpho.soma.diameters = soma_diameters
     morpho.soma.type = SomaType.SOMA_SIMPLE_CONTOUR  # HDF5 does not support single point somas
 
-    visited_edges = set()
-
-    def edge_key(a, b):
-        return tuple(sorted((int(a), int(b))))
-
-    def section_diameter_starting_at(node, inherited_diameter):
-        """
-        Diameter rule:
-        - If this node is a known branch point, use its branch diameter.
-        - Otherwise inherit the upstream diameter.
-        """
-        if node in branch_diameter_by_index:
-            return branch_diameter_by_index[node]
-        return inherited_diameter
+    def is_boundary_node(i):
+        """Returns True if the node at index `i` is a section boundary (has degree != 2)."""
+        return degrees.get(i, 0) != 2
 
     def trace_until_boundary(start, nxt):
         """
         Start at a boundary node and walk through degree-2 nodes until the next
         boundary/end/branch point is reached.
+
+        Parameters
+        ----------
+        start : int
+            Index of the starting boundary node.
+        nxt : int
+            Index of the next node to visit (must be a neighbor of `start`).
         """
         path = [start, nxt]
         prev = start
@@ -193,14 +213,31 @@ def build_morphology_from_filaments(
             candidates = [x for x in adjacency[cur] if x != prev]
 
             if len(candidates) != 1:
-                break
+                break  # should not happen, since `is_boundary_node` depends on `degrees` which is built from `adjacency`
 
             prev, cur = cur, candidates[0]
             path.append(cur)
 
         return path
 
-    def add_sections_from_node(current_node, parent_node, parent_section, inherited_diameter):
+    def edge_key(a, b):
+        """Returns immutable key defining an edge (tuple of 2 point indices)"""
+        return tuple(sorted((int(a), int(b))))
+
+    visited_edges = set()
+    def add_sections_from_node(current_node, parent_node, parent_section):
+        """
+        Recursively add sections to the morphology using `adjacency`.
+        
+        Parameters
+        ----------
+        current_node : int
+            Index of the current node to process.
+        parent_node : int or None
+            Index of the parent node (the node from which we arrived at `current_node`).
+        parent_section : Section or None
+            The parent section to which the new sections will be appended. If `None`, the new sections will be appended to the root of the morphology.
+        """
         for nxt in adjacency[current_node]:
             if nxt == parent_node:
                 continue
@@ -215,10 +252,15 @@ def build_morphology_from_filaments(
             for a, b in zip(path_indices[:-1], path_indices[1:]):
                 visited_edges.add(edge_key(a, b))
 
-            section_points = points[path_indices].tolist()
+            section_points = nodes[path_indices].tolist()
 
-            diameter = section_diameter_starting_at(current_node, inherited_diameter)
-            section_diameters = [diameter] * len(section_points)
+            # interpolate diameters along the path using the coordinates and the diameters at the endpoints
+            section_distances = np.linalg.norm(np.diff(section_points, axis=0), axis=1)
+            section_distances = np.insert(section_distances, 0, 0)
+            interp_x = np.cumsum(section_distances)
+            interp_xp = [0, interp_x[-1]]
+            interp_yp = [diameter_by_index[path_indices[0]], diameter_by_index[path_indices[-1]]]
+            section_diameters = np.interp(interp_x, interp_xp, interp_yp)
 
             point_level = PointLevel(section_points, section_diameters)
 
@@ -229,25 +271,17 @@ def build_morphology_from_filaments(
 
             end_node = path_indices[-1]
 
-            # The diameter for downstream sections is determined by the end node
-            # if it is a branch point; otherwise it remains inherited.
-            downstream_diameter = section_diameter_starting_at(end_node, diameter)
-
             add_sections_from_node(
                 current_node=end_node,
                 parent_node=path_indices[-2],
-                parent_section=section,
-                inherited_diameter=downstream_diameter,
+                parent_section=section
             )
 
-    initial_diameter = section_diameter_starting_at(root_index, root_diameter)
-
-    logger.debug(f"-- adding sections")
+    logger.debug(f"-- building morphology")
     add_sections_from_node(
-        current_node=root_index,
+        current_node=list(section_boundary_indices)[0],  # start from an arbitrary section boundary point
         parent_node=None,
-        parent_section=None,
-        inherited_diameter=initial_diameter,
+        parent_section=None
     )
 
     # sanity check: all edges should be consumed in a tree-like graph.
@@ -256,8 +290,7 @@ def build_morphology_from_filaments(
 
     if unvisited:
         raise ValueError(
-            "Some edges were not converted. The graph may be disconnected, "
-            "cyclic, or not reachable from root_index. "
+            "Some edges were not converted. The graph may be disconnected or cyclic."
             f"Number of unvisited edges: {len(unvisited)}"
         )
 
@@ -415,7 +448,7 @@ class Dataset:
         self._path = path
 
         # load raw data
-        diameters = pd.read_csv(os.path.join(path, "diameterData.csv"))
+        diameterValues = pd.read_csv(os.path.join(path, "diameterData.csv"))
         diameterPositions = pd.read_csv(os.path.join(path, "positionData.csv"))
         mat = read_mat(os.path.join(path, f"dataset_{self.name}.mat"))  # type: dict[str, NDArray]
         filamentPoints = mat["vFilamentsPoints"]
@@ -423,39 +456,39 @@ class Dataset:
 
         # Merge tables on ID
         # left join keeps all rows from positionData
-        branchPoints = pd.merge(
+        diameters = pd.merge(
             diameterPositions,
-            diameters,
+            diameterValues,
             on="ID",
             how="left",
             suffixes=("_pos", "_diam")
         )
 
         # Check whether Depth values match for rows where diameter data exists
-        depth_mismatch = branchPoints[
-            branchPoints["Depth_diam"].notna() &
-            (branchPoints["Depth_pos"] != branchPoints["Depth_diam"])
+        depth_mismatch = diameters[
+            diameters["Depth_diam"].notna() &
+            (diameters["Depth_pos"] != diameters["Depth_diam"])
         ]
         if not depth_mismatch.empty:
             raise ValueError(
                 f"Depth values do not match for some rows:\n{depth_mismatch[['ID', 'Depth_pos', 'Depth_diam']]}"
             )
         else:
-            branchPoints["Depth"] = branchPoints["Depth_pos"]
-            branchPoints = branchPoints.drop(columns=["Depth_pos", "Depth_diam"])
+            diameters["Depth"] = diameters["Depth_pos"]
+            diameters = diameters.drop(columns=["Depth_pos", "Depth_diam"])
 
         # Check FilamentID consistency
-        filament_mismatch = branchPoints[
-            branchPoints["FilamentID_diam"].notna() &
-            (branchPoints["FilamentID_pos"] != branchPoints["FilamentID_diam"])
+        filament_mismatch = diameters[
+            diameters["FilamentID_diam"].notna() &
+            (diameters["FilamentID_pos"] != diameters["FilamentID_diam"])
         ]
         if not filament_mismatch.empty:
             raise ValueError(
                 f"FilamentID values do not match for some rows:\n{filament_mismatch[['ID', 'FilamentID_pos', 'FilamentID_diam']]}"
             )
         else:
-            branchPoints["FilamentID"] = branchPoints["FilamentID_pos"]
-            branchPoints = branchPoints.drop(columns=["FilamentID_pos", "FilamentID_diam"])
+            diameters["FilamentID"] = diameters["FilamentID_pos"]
+            diameters = diameters.drop(columns=["FilamentID_pos", "FilamentID_diam"])
 
         skipped_trivial_cells = 0
         skipped_cells_due_to_errors = 0
@@ -472,11 +505,11 @@ class Dataset:
 
                 filamentID = 100000000 + cellID  # by definition of dataset
                 # position and diameter of branching points
-                cell_branchPoints = branchPoints.loc[branchPoints.FilamentID == filamentID]
+                cell_diameters = diameters.loc[diameters.FilamentID == filamentID]
 
                 morphology = build_morphology_from_filaments(filamentPoints=cell_filamentPoints,
                                                             filamentEdges=cell_filamentEdges,
-                                                            branchPoints=cell_branchPoints,
+                                                            diameters=cell_diameters,
                                                             logger=self._logger)
                 
                 self._logger.debug(f"-- making cell morphology immutable")
@@ -493,6 +526,10 @@ class Dataset:
 
         self._logger.info(f"Skipped {skipped_trivial_cells} trivial cells with less than 4 filament points.")
         self._logger.info(f"Skipped {skipped_cells_due_to_errors} cells due to errors during loading.")
+
+        if len(self._cells) == 0:
+            self._logger.error("No cells were loaded.")
+            return self
 
         if remove_edge_cells:
             self.remove_edge_cells(offset = edge_cell_offset, mode = edge_cell_mode, limit = edge_cell_limit)
