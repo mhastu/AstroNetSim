@@ -14,7 +14,7 @@ from numpy.typing import NDArray
 from .cell import Cell
 from .util import create_contour
 
-def build_morphology_from_filaments(
+def build_morphology_from_matlab_data(
         filamentPoints,
         filamentEdges,
         diameters,
@@ -45,7 +45,7 @@ def build_morphology_from_filaments(
 
     atol : float
         Tolerance for matching diameter positions to filamentPoints. Default: 1e-3
-    
+
     logger : logging.Logger
         logger to use
 
@@ -71,19 +71,19 @@ def build_morphology_from_filaments(
     edges = np.asarray(filamentEdges, dtype=int)
 
     # remove invalid diameter entries (NaN coordinates, NaN diameter, negative diameter)
-    valid_diameters_nan_coordinates = diameters.dropna(subset=["PtPositionX", "PtPositionY", "PtPositionZ"])
-    n_invalid_nan_coordinates = len(valid_diameters_nan_coordinates) - len(diameters)
+    valid_diameters_1_nan_coordinates = diameters.dropna(subset=["PtPositionX", "PtPositionY", "PtPositionZ"])
+    n_invalid_nan_coordinates = len(diameters) - len(valid_diameters_1_nan_coordinates)
     if n_invalid_nan_coordinates > 0:
         logger.warning(f"Removed {n_invalid_nan_coordinates} invalid diameter entries (NaN coordinates).")
-    valid_diameters_nan_diameter = valid_diameters_nan_coordinates.dropna(subset=["PtDiameter"])
-    n_invalid_nan_diameter = len(valid_diameters_nan_diameter) - len(valid_diameters_nan_coordinates)
+    valid_diameters_2_nan_diameter = valid_diameters_1_nan_coordinates.dropna(subset=["PtDiameter"])
+    n_invalid_nan_diameter = len(valid_diameters_1_nan_coordinates) - len(valid_diameters_2_nan_diameter)
     if n_invalid_nan_diameter > 0:
         logger.warning(f"Removed {n_invalid_nan_diameter} invalid diameter entries (NaN diameter).")
-    valid_diameters_negative = valid_diameters_nan_diameter[valid_diameters_nan_diameter["PtDiameter"] >= 0]
-    n_invalid_negative = len(valid_diameters_negative) - len(valid_diameters_nan_diameter)
+    valid_diameters_3_negative = valid_diameters_2_nan_diameter[valid_diameters_2_nan_diameter["PtDiameter"] >= 0]
+    n_invalid_negative = len(valid_diameters_2_nan_diameter) - len(valid_diameters_3_negative)
     if n_invalid_negative > 0:
         logger.warning(f"Removed {n_invalid_negative} invalid diameter entries (negative diameter).")
-    diameters = valid_diameters_negative
+    diameters = valid_diameters_3_negative
 
     diameter_positions = diameters[["PtPositionX", "PtPositionY", "PtPositionZ"]].to_numpy(dtype=float)
     diameter_values = diameters["PtDiameter"].to_numpy(dtype=float)
@@ -179,7 +179,6 @@ def build_morphology_from_filaments(
     # ------------------------------------------------------------------
     # 3. Build morphology
     # ------------------------------------------------------------------
-
     morpho = MutableMorphology()
 
     # create soma as a contour
@@ -507,11 +506,11 @@ class Dataset:
                 # position and diameter of branching points
                 cell_diameters = diameters.loc[diameters.FilamentID == filamentID]
 
-                morphology = build_morphology_from_filaments(filamentPoints=cell_filamentPoints,
-                                                            filamentEdges=cell_filamentEdges,
-                                                            diameters=cell_diameters,
-                                                            logger=self._logger)
-                
+                morphology = build_morphology_from_matlab_data(filamentPoints=cell_filamentPoints,
+                                                               filamentEdges=cell_filamentEdges,
+                                                               diameters=cell_diameters,
+                                                               logger=self._logger)
+
                 self._logger.debug(f"-- making cell morphology immutable")
                 # convert to immutable: more efficient at working with astrocyte
                 # to change the morphology of the astrocyte again, the morphology
