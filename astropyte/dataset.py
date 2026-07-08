@@ -55,7 +55,7 @@ def build_morphology_from_matlab_data(
     """
     # explanation of the algorithm:
     # 1. build adjacency (list all connected neighbors for each point). degree of a point = number of neighbors
-    # 2. starting at an arbitrary branch point (degree > 2):
+    # 2. starting at the soma:
     #   - recursively trace through degree-2 nodes (using adjacency) until
     #     a boundary node is reached (degree != 2).
     #   - for each section (from boundary node to boundary node), interpolate diameters along the
@@ -276,9 +276,28 @@ def build_morphology_from_matlab_data(
                 parent_section=section
             )
 
+    # interpolate soma diameter if soma index has degree 2 (i.e. is not a branch point and therefore has no diameter specified)
+    if soma_index not in diameter_by_index:
+        neighbors = adjacency[soma_index]
+        if len(neighbors) != 2:
+            raise ValueError(f"Soma has no diameter specified and has degree {len(neighbors)}. Expected degree 2 to interpolate soma diameter.")
+        neighbor1, neighbor2 = neighbors
+        path1 = trace_until_boundary(soma_index, neighbor1)
+        path2 = trace_until_boundary(soma_index, neighbor2)
+        section1_points = nodes[path1].tolist()
+        section2_points = nodes[path2].tolist()
+        section1_length = np.sum(np.linalg.norm(np.diff(section1_points, axis=0), axis=1))
+        section2_length = np.sum(np.linalg.norm(np.diff(section2_points, axis=0), axis=1))
+        interp_x = [section1_length]
+        interp_xp = [0, section1_length + section2_length]
+        interp_yp = [diameter_by_index[path1[-1]], diameter_by_index[path2[-1]]]
+        soma_diameter = np.interp(interp_x, interp_xp, interp_yp)[0]
+        diameter_by_index[soma_index] = soma_diameter
+        logger.info(f"Soma has degree 2, interpolated diameter as {soma_diameter}.")
+
     logger.debug(f"-- building morphology")
     add_sections_from_node(
-        current_node=list(section_boundary_indices)[0],  # start from an arbitrary section boundary point
+        current_node=soma_index,
         parent_node=None,
         parent_section=None
     )
@@ -415,7 +434,7 @@ class Dataset:
         self._logger.info(f"Finished loading dataset from directory {path}. Loaded {len(self.cells)} cells.")
         return self
 
-    def from_matlab(self, path: str, remove_edge_cells: bool = True, edge_cell_offset: float = 2., edge_cell_mode: str = "hardlimit", edge_cell_limit: int = 20, remove_artifact_cells: bool = False, min_sections: int = 1):
+    def from_matlab(self, path: str, cells_to_load: list = None, remove_edge_cells: bool = True, edge_cell_offset: float = 2., edge_cell_mode: str = "hardlimit", edge_cell_limit: int = 20, remove_artifact_cells: bool = False, min_sections: int = 1):
         """Loads the dataset from matlab and csv files in the given dataset directory.
         Overwrites all previously loaded data.
         
@@ -426,6 +445,8 @@ class Dataset:
             - diameterData.csv (Generated in Matlab)
             - positionData.csv (Generated in Matlab)
             - dataset_[dataset_name].mat (contains diameterData and positionData as tables, which can't be loaded in Python)
+        cells_to_load : list of int or None
+            List of cell IDs to load. If None, loads all cells.
         remove_edge_cells : bool
             Whether cells that are too close to the overall dataset boundary (encapsulating cuboid) should be removed
         edge_cell_offset : float
@@ -491,7 +512,9 @@ class Dataset:
 
         skipped_trivial_cells = 0
         skipped_cells_due_to_errors = 0
-        for cellID in range(len(filamentPoints)):
+        if cells_to_load is None:
+            cells_to_load = range(len(filamentPoints))
+        for cellID in cells_to_load:
             self._logger.info(f"Loading cell {cellID}...")
             try:
                 cell_filamentPoints = np.array(filamentPoints[cellID])
@@ -519,6 +542,7 @@ class Dataset:
                 self._cells[cellID] = Cell(morphology, ID=cellID, logger=self._logger)
             except Exception as e:
                 self._logger.error(f"{type(e).__name__} while loading cell {cellID}: {e}")
+                self._logger.debug(f"Traceback for cell {cellID}:\n", exc_info=True)
                 skipped_cells_due_to_errors += 1
                 continue
             self._logger.info(f"Cell {cellID} loaded.")
