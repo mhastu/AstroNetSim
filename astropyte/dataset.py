@@ -512,8 +512,16 @@ class Dataset:
 
         skipped_trivial_cells = 0
         skipped_cells_due_to_errors = 0
+        all_cell_ids = set(range(len(filamentPoints)))
         if cells_to_load is None:
-            cells_to_load = range(len(filamentPoints))
+            cells_to_load = all_cell_ids
+        else:
+            cells_to_load = set(cells_to_load)
+        valid_cell_ids = cells_to_load & all_cell_ids
+        if len(valid_cell_ids) < len(cells_to_load):
+            invalid_cell_ids = cells_to_load - all_cell_ids
+            self._logger.warning(f"Cell IDs in dataset range from 0 to {len(filamentPoints)-1}. Ignoring invalid cell IDs: {invalid_cell_ids}")
+        cells_to_load = valid_cell_ids
         for cellID in cells_to_load:
             self._logger.info(f"Loading cell {cellID}...")
             try:
