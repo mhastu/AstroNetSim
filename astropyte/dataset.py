@@ -124,18 +124,18 @@ def build_morphology_from_matlab_data(
         raise ValueError(
             f"Diameter position {diameter_positions[i]} does not match any filament point "
             f"within tolerance {atol}. Closest distance: {closest_distance}, "
-            f"closest point index: {closest_index}"
+            f"closest filament point index: {closest_index}"
         )
 
-    diameter_by_index = {
-        int(idx): float(diam)
-        for idx, diam in zip(queried_diameter_indices, diameter_values)
-    }
+    diameter_by_node_index = {}
+    diameter_row_by_node_index = {}  # needed for branchData validation
 
-    diameter_indices = set(diameter_by_index.keys())
-
-    if len(diameter_indices) != len(queried_diameter_indices):
-        raise ValueError("Multiple diameter positions map to the same filament point.")
+    for row_idx, (node_idx, diameter) in enumerate(zip(queried_diameter_indices, diameter_values)):
+        node_idx = int(node_idx)
+        if node_idx in diameter_by_node_index:
+            raise ValueError("Multiple diameter positions map to the same filament point.")
+        diameter_by_node_index[node_idx] = float(diameter)
+        diameter_row_by_node_index[node_idx] = int(row_idx)
 
     # ------------------------------------------------------------------
     # 2. Build undirected adjacency
@@ -157,23 +157,23 @@ def build_morphology_from_matlab_data(
     degrees = {i: len(adjacency[i]) for i in range(len(nodes))}
 
     # validate that all diameter positions are at section boundary nodes
-    for idx in diameter_indices:
+    for idx in diameter_by_node_index:
         if degrees.get(idx, 0) == 2:
             raise ValueError(f"Diameter position at index {idx} has degree 2.")
     # validate that all section boundary nodes in the graph have a corresponding diameter
     for idx in degrees:
-        if degrees[idx] > 2 and idx not in diameter_indices:
+        if degrees[idx] > 2 and idx not in diameter_by_node_index:
             raise ValueError(f"Filament point at index {idx} has degree {degrees[idx]} > 2 (i.e. branch point) but no corresponding diameter. Cannot interpolate diameters along sections without branch diameters at section boundaries.")
     # use a fallback diameter of 0 for all endpoints (degree 1) that do not have a corresponding point in diameterPositions
-    missing_endpoint_diameters = [idx for idx in degrees if degrees[idx] == 1 and idx not in diameter_indices]
+    missing_endpoint_diameters = [idx for idx in degrees if degrees[idx] == 1 and idx not in diameter_by_node_index]
     if missing_endpoint_diameters:
         logger.info(f"{len(missing_endpoint_diameters)} endpoints (degree 1) do not have a corresponding point in diameterPositions. Using fallback diameter 0 for these endpoints.")
         for idx in missing_endpoint_diameters:
-            diameter_by_index[idx] = 0.0
-            diameter_indices.add(idx)
-    
+            diameter_by_node_index[idx] = 0.0
+            diameter_row_by_node_index[idx] = None  # no corresponding row in diameterPositions
+
     section_boundary_indices = set(i for i in degrees if degrees[i] != 2)
-    if diameter_indices != section_boundary_indices:
+    if diameter_by_node_index.keys() != section_boundary_indices:
         raise ValueError("All section boundary nodes (degree != 2) must have a corresponding diameter.")
 
     # ------------------------------------------------------------------
@@ -224,7 +224,8 @@ def build_morphology_from_matlab_data(
         return tuple(sorted((int(a), int(b))))
 
     visited_edges = set()
-    def add_sections_from_node(current_node, parent_node, parent_section):
+    branch_records = []
+    def add_sections_from_node(current_node, parent_node, parent_section, depth):
         """
         Recursively add sections to the morphology using `adjacency`.
         
@@ -236,6 +237,8 @@ def build_morphology_from_matlab_data(
             Index of the parent node (the node from which we arrived at `current_node`).
         parent_section : Section or None
             The parent section to which the new sections will be appended. If `None`, the new sections will be appended to the root of the morphology.
+        depth : int
+            Topological depth of sections that start from `current_node`. Soma-connected sections have depth 1.
         """
         for nxt in adjacency[current_node]:
             if nxt == parent_node:
@@ -258,7 +261,7 @@ def build_morphology_from_matlab_data(
             section_distances = np.insert(section_distances, 0, 0)
             interp_x = np.cumsum(section_distances)
             interp_xp = [0, interp_x[-1]]
-            interp_yp = [diameter_by_index[path_indices[0]], diameter_by_index[path_indices[-1]]]
+            interp_yp = [diameter_by_node_index[path_indices[0]], diameter_by_node_index[path_indices[-1]]]
             section_diameters = np.interp(interp_x, interp_xp, interp_yp)
 
             point_level = PointLevel(section_points, section_diameters)
@@ -268,16 +271,28 @@ def build_morphology_from_matlab_data(
             else:
                 section = parent_section.append_section(point_level, section_type)
 
+            # first 3 columns of branchData (from astro_geometry.m)
+            # {currentBranch, [startIdx, endIdx], branchDepth}
+            branch_records.append({
+                "path_indices": [int(i) for i in path_indices],
+                "diameter_row_indices": [
+                    diameter_row_by_node_index[path_indices[0]],
+                    diameter_row_by_node_index[path_indices[-1]],
+                ],
+                "depth": int(depth),
+            })
+
             end_node = path_indices[-1]
 
             add_sections_from_node(
                 current_node=end_node,
                 parent_node=path_indices[-2],
-                parent_section=section
+                parent_section=section,
+                depth=depth + 1
             )
 
     # interpolate soma diameter if soma index has degree 2 (i.e. is not a branch point and therefore has no diameter specified)
-    if soma_index not in diameter_by_index:
+    if soma_index not in diameter_by_node_index:
         neighbors = adjacency[soma_index]
         if len(neighbors) != 2:
             raise ValueError(f"Soma has no diameter specified and has degree {len(neighbors)}. Expected degree 2 to interpolate soma diameter.")
@@ -290,17 +305,24 @@ def build_morphology_from_matlab_data(
         section2_length = np.sum(np.linalg.norm(np.diff(section2_points, axis=0), axis=1))
         interp_x = [section1_length]
         interp_xp = [0, section1_length + section2_length]
-        interp_yp = [diameter_by_index[path1[-1]], diameter_by_index[path2[-1]]]
+        interp_yp = [diameter_by_node_index[path1[-1]], diameter_by_node_index[path2[-1]]]
         soma_diameter = np.interp(interp_x, interp_xp, interp_yp)[0]
-        diameter_by_index[soma_index] = soma_diameter
+        diameter_by_node_index[soma_index] = soma_diameter
+        diameter_row_by_node_index[soma_index] = None  # no corresponding row in diameterPositions
         logger.info(f"Soma has degree 2, interpolated diameter as {soma_diameter}.")
 
     logger.debug(f"-- building morphology")
     add_sections_from_node(
         current_node=soma_index,
         parent_node=None,
-        parent_section=None
+        parent_section=None,
+        depth=1
     )
+
+    # Sort branch_records by depth to mirror astro_geometry.m's breadth-first traversal:
+    # all soma-connected sections first, then their daughters, then deeper descendants.
+    # Python's sort is stable, so adjacency/traversal order is preserved within each depth.
+    branch_records.sort(key=lambda record: record["depth"])
 
     # sanity check: all edges should be consumed in a tree-like graph.
     original_edges = {edge_key(a, b) for a, b in edges}
@@ -312,7 +334,7 @@ def build_morphology_from_matlab_data(
             f"Number of unvisited edges: {len(unvisited)}"
         )
 
-    return morpho
+    return morpho, branch_records
 
 class Dataset:
     """A set of astrocytes.
@@ -434,19 +456,31 @@ class Dataset:
         self._logger.info(f"Finished loading dataset from directory {path}. Loaded {len(self.cells)} cells.")
         return self
 
-    def from_matlab(self, path: str, cells_to_load: list = None, remove_edge_cells: bool = True, edge_cell_offset: float = 2., edge_cell_mode: str = "hardlimit", edge_cell_limit: int = 20, remove_artifact_cells: bool = False, min_sections: int = 1):
+    def from_matlab(self, path: str,
+                    cells_to_load: list = None,
+                    validate_branch_records: bool = False,
+                    remove_edge_cells: bool = True,
+                    edge_cell_offset: float = 2.,
+                    edge_cell_mode: str = "hardlimit",
+                    edge_cell_limit: int = 20,
+                    remove_artifact_cells: bool = False,
+                    min_sections: int = 1):
         """Loads the dataset from matlab and csv files in the given dataset directory.
         Overwrites all previously loaded data.
-        
+
         Parameters
         ----------
         path : str
             The path to the dataset directory. Assumes files to be present:
-            - diameterData.csv (Generated in Matlab)
-            - positionData.csv (Generated in Matlab)
             - dataset_[dataset_name].mat (contains diameterData and positionData as tables, which can't be loaded in Python)
+            - diameterData.csv (Generated in Matlab using `writetable(diameterData, '../datasets/\[_dataset name_\]/diameterData.csv')`)
+            - positionData.csv (Generated in Matlab using `writetable(positionData, '../datasets/\[_dataset name_\]/positionData.csv')`)
         cells_to_load : list of int or None
             List of cell IDs to load. If None, loads all cells.
+        validate_branch_records : bool
+            Whether to validate the loaded morphology against branchData.mat.
+            If True, a warning is given if the records do not match.
+            Assumes <dataset directory>/cell_<dataset_name>_<cell_id>/branchData.mat exists for each cell.
         remove_edge_cells : bool
             Whether cells that are too close to the overall dataset boundary (encapsulating cuboid) should be removed
         edge_cell_offset : float
@@ -537,10 +571,41 @@ class Dataset:
                 # position and diameter of branching points
                 cell_diameters = diameters.loc[diameters.FilamentID == filamentID]
 
-                morphology = build_morphology_from_matlab_data(filamentPoints=cell_filamentPoints,
+                morphology, branch_records = build_morphology_from_matlab_data(filamentPoints=cell_filamentPoints,
                                                                filamentEdges=cell_filamentEdges,
                                                                diameters=cell_diameters,
                                                                logger=self._logger)
+                
+
+                if validate_branch_records:
+                    self._logger.debug(f"-- validating branch records")
+                    branchData_path=os.path.join(path, f"cell_{self.name}_{cellID+1}", "branchData.mat")  # MATLAB is 1-indexed
+                    try:
+                        branchData_mat = read_mat(branchData_path)
+                        branchData = branchData_mat["branchData"]
+                        branchData_records = [
+                            {
+                                "path_indices": [int(i)-1 for i in row[0]],  # MATLAB is 1-indexed
+                                "diameter_row_indices": [int(row[1][0])-1, int(row[1][1])-1],  # MATLAB is 1-indexed
+                                "depth": int(row[2])
+                            }
+                            for row in branchData
+                        ]
+                        if branchData_records != branch_records:
+                            self._logger.warning(f"Branch records from MATLAB do not match those generated in Python for cell {cellID}.")
+                            self._logger.debug(f"In total {len(branch_records)} records in Python, {len(branchData_records)} records in MATLAB.")
+                            not_in_mat = [r for r in branch_records if r not in branchData_records]
+                            not_in_python = [r for r in branchData_records if r not in branch_records]
+                            self._logger.debug(f"{len(not_in_mat)} branch records in Python but not in MATLAB: {not_in_mat if len(not_in_mat) < 10 else str(not_in_mat[:10]) + '...'}")
+                            self._logger.debug(f"{len(not_in_python)} branch records in MATLAB but not in Python: {not_in_python if len(not_in_python) < 10 else str(not_in_python[:10]) + '...'}")
+                        else:
+                            self._logger.info("Branch records from MATLAB match those generated in Python.")
+                    except FileNotFoundError:
+                        self._logger.error(f"branchData.mat not found for cell {cellID}. Skipping validation of branch records.")
+                    except Exception as e:
+                        self._logger.error(f"{type(e).__name__} while validating branch records for cell {cellID}: {e}")
+                        self._logger.debug(f"Traceback:\n", exc_info=True)
+
 
                 self._logger.debug(f"-- making cell morphology immutable")
                 # convert to immutable: more efficient at working with astrocyte
