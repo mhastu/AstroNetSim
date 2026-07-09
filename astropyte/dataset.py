@@ -504,7 +504,7 @@ class Dataset:
         # load raw data
         diameterValues = pd.read_csv(os.path.join(path, "diameterData.csv"))
         diameterPositions = pd.read_csv(os.path.join(path, "positionData.csv"))
-        mat = read_mat(os.path.join(path, f"dataset_{self.name}.mat"))  # type: dict[str, NDArray]
+        mat = read_mat(os.path.join(path, f"dataset_{self.name}.mat"), ["vFilamentsPoints", "vFilamentsEdges"])  # type: dict[str, NDArray]
         filamentPoints = mat["vFilamentsPoints"]
         filamentEdges = mat["vFilamentsEdges"]
 
@@ -581,7 +581,7 @@ class Dataset:
                     self._logger.debug(f"-- validating branch records")
                     branchData_path=os.path.join(path, f"cell_{self.name}_{cellID+1}", "branchData.mat")  # MATLAB is 1-indexed
                     try:
-                        branchData_mat = read_mat(branchData_path)
+                        branchData_mat = read_mat(branchData_path, ["branchData"])
                         branchData = branchData_mat["branchData"]
                         branchData_records = [
                             {
