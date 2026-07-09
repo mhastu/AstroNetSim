@@ -404,7 +404,7 @@ class Dataset:
         if version == "latest":
             version = "0.1"
         if version == "0.1":
-            data = {
+            metadata = {
                 "version": version,
                 "name": self._name,
                 "path": self._path,
@@ -423,7 +423,7 @@ class Dataset:
             else:
                 raise FileExistsError(f"Directory {path} is not empty. Set overwrite=True to overwrite existing files.")
         with open(os.path.join(path, "metadata.pkl"), "wb") as f:
-            pickle.dump(data, f)
+            pickle.dump(metadata, f)
         for cell in self.cells.values():
             cell.save_morphology_to_hdf(os.path.join(path, f"cell_{cell.ID}.h5"))
         self._logger.info(f"Finished saving dataset to directory {path}.")
@@ -440,16 +440,16 @@ class Dataset:
         """
         self._logger.info(f"Loading dataset from directory {path}...")
         with open(os.path.join(path, "metadata.pkl"), "rb") as f:
-            data = pickle.load(f)
+            metadata = pickle.load(f)
 
-        version = data["version"]
+        version = metadata["version"]
         if version == "0.1":
-            self._name = data["name"] if "name" in data else None
-            self._path = data["path"] if "path" in data else None
-            self._encapsulating_cuboid = data["encapsulating_cuboid"] if "encapsulating_cuboid" in data else None
+            self._name = metadata["name"] if "name" in metadata else None
+            self._path = metadata["path"] if "path" in metadata else None
+            self._encapsulating_cuboid = metadata["encapsulating_cuboid"] if "encapsulating_cuboid" in metadata else None
             self._cells = {
                 # loading morphology resets caches like ellipsoid, so we load morphology first and then call from_dict to set the metadata and caches again
-                cell_data["ID"]: Cell(ID = cell_data["ID"], logger = self._logger).load_morphology_from_hdf(os.path.join(path, f"cell_{cell_data['ID']}.h5")).from_dict(cell_data) for cell_data in data["cells"]
+                cell_data["ID"]: Cell(ID = cell_data["ID"], logger = self._logger).load_morphology_from_hdf(os.path.join(path, f"cell_{cell_data['ID']}.h5")).from_dict(cell_data) for cell_data in metadata["cells"]
             }
         else:
             raise ValueError(f"Invalid import version: {version}")
