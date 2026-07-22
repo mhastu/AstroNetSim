@@ -1,7 +1,7 @@
 import numpy as np
 from numpy.typing import NDArray
 
-def mvee(points: np.array, tolerance: float = 1e-2):
+def mvee(points: np.array, tolerance: float = 1e-4) -> tuple[np.array, np.array, np.array]:
     """Computes the minimum volume encapsulating ellipsoid (MVEE) of a set of points using Khachiyan's algorithm.
 
     Finds the parameters of the ellipse equation in "center form"
@@ -52,17 +52,27 @@ def mvee(points: np.array, tolerance: float = 1e-2):
     return center, radii, rotation
 
 
-def points_inside_ellipsoid(points, center, radii, rotation, tolerance: float = 1e-8) -> NDArray[np.bool_]:
+def points_inside_ellipsoid(points, center, radii, rotation, tolerance: float = 1e-3, relaxed: bool = True) -> NDArray[np.bool_]:
     """
     Returns the mask (np.array(bool)) of all points inside the ellipsoid.
 
-    The ellipsoid is represented by:
-        center   : shape (3,)
-        radii    : shape (3,)
-        rotation : shape (3, 3)
-
     A point is inside the ellipsoid if:
-        sum(((rotation.T @ (point - center)) / radii) ** 2) <= 1
+        `sum((((points - center) @ rotation) / radii) ** 2) < 1 +/- tolerance`
+
+    Parameters
+    ----------
+    points : np.ndarray
+        The points to check, shape (N, 3).
+    center : np.ndarray
+        The center of the ellipsoid, shape (3,).
+    radii : np.ndarray
+        The radii of the ellipsoid, shape (3,).
+    rotation : np.ndarray
+        The rotation matrix of the ellipsoid, shape (3, 3).
+    tolerance : float
+        The tolerance for determining if a point is inside the ellipsoid.
+    relaxed : bool
+        If False, the tolerance is applied in the opposite direction (i.e., points must be strictly inside the ellipsoid). Default True (points can be slightly outside the ellipsoid).
     """
 
     points = np.asarray(points, dtype=float)
@@ -84,6 +94,8 @@ def points_inside_ellipsoid(points, center, radii, rotation, tolerance: float = 
     normalized = local / radii
     values = np.sum(normalized ** 2, axis=1)
 
+    if not relaxed:
+        tolerance = -tolerance
     return values < (1.0 + tolerance)
 
 
@@ -103,3 +115,34 @@ def create_contour(radius, point_count=20, line_width=0.25):
     diameters = np.repeat(line_width, point_count)
 
     return points, diameters
+
+def mahalanobis_radius(points, center, radii, rotation):
+    """
+    Compute the Mahalanobis radius of one or more points relative to an ellipsoid.
+
+    Parameters
+    ----------
+    points : (..., D) array
+        One point or many points.
+    center : (D,) array
+    radii : (D,) array
+    rotation : (D, D) array
+        Rotation matrix returned by mvee().
+
+    Returns
+    -------
+    r : (...) array
+        Mahalanobis radius.
+        r < 1 : inside
+        r = 1 : on surface
+        r > 1 : outside
+    """
+    points = np.asarray(points)
+
+    # Transform into ellipsoid coordinates
+    local = (points - center) @ rotation
+
+    # Scale by the radii
+    scaled = local / radii
+
+    return np.linalg.norm(scaled, axis=-1)
