@@ -20,4 +20,5 @@ kneed==0.8.5
 yellowbrick==1.5
 morphio==3.4.2
 networkx==3.2.1
+neurots==3.7.0
 ```
