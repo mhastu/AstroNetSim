@@ -24,15 +24,13 @@ class Cell:
 
         self._morphology = morphology  # type: Morphology
         self._ID = ID  # type: int
-        
+
         if type(morphology) == str:
             self.load_morphology_from_hdf(morphology)
 
-        # caches
-        self._section_depths = None  # type: dict[int, int]
-        self._terminal_points_with_depth = None  # type: list[tuple[list, int]]
-        self._ellipsoid = None  # type: tuple[NDArray, NDArray, NDArray]
+        self._clear_morphology_caches()
 
+    # -------------------------------------------------- Properties ---------------------------------------------------
     @property
     def morphology(self) -> Morphology:
         return self._morphology
@@ -42,19 +40,48 @@ class Cell:
             raise TypeError("new morphology must be immutable")
         assert type(val) == Morphology, "new morphology must be of type morphio.Morphology"
 
+        self._clear_morphology_caches()
         self._morphology = val
-        # reset caches
-        self._section_depths = None
-        self._terminal_points_with_depth = None
-        self._ellipsoid = None
 
     @property
     def ID(self) -> int:
         return self._ID
+
+    @property
+    def total_process_length(self) -> float:
+        """Returns the sum of all segment lengths."""
+        if self._total_process_length is None:
+            self._total_process_length: float = sum([np.sum(np.linalg.norm(np.diff(section.points, axis=0), axis=1)) for section in self.morphology.iter()])
+        return self._total_process_length
+
+    @property
+    def volume(self) -> float:
+        """Returns the sum of the volumes of the cones composing a filament."""
+        if self._volume is None:
+            self._volume = sum(
+                np.sum(
+                    (np.pi / 3)
+                    * np.linalg.norm(np.diff(section.points, axis=0), axis=1)
+                    * (
+                        (section.diameters[:-1] / 2) ** 2
+                        + (section.diameters[:-1] / 2) * (section.diameters[1:] / 2)
+                        + (section.diameters[1:] / 2) ** 2
+                    )
+                )
+                for section in self.morphology.iter()
+            )
+        return self._volume
+
+    @property
+    def n_terminals(self):
+        """Returns the number of terminal points."""
+        return len(self.terminal_points_with_depth)
+
     @property
     def n_branchingPoints(self):
         """Number of branching points in the cell."""
         return sum(len(section.children) > 1 for section in self.morphology.iter())
+
     @property
     def section_depths(self) -> dict[int, int]:
         """
@@ -72,33 +99,32 @@ class Cell:
             self._section_depths = _section_depths
 
         return self._section_depths
+
     @property
     def terminal_points_with_depth(self) -> list[tuple[list, int]]:
         """
         Terminal section endpoints with their section-tree depth.
         """
         if self._terminal_points_with_depth is None:
-            _terminal_points_with_depth = []
+            self._terminal_points_with_depth = []
 
             for section in self.morphology.iter():
                 if len(section.children) == 0 and len(section.points) > 0:
-                    _terminal_points_with_depth.append(
+                    self._terminal_points_with_depth.append(
                         (
                             np.asarray(section.points, dtype=float)[-1],
                             self.section_depths[section.id],
                         )
                     )
 
-            self._terminal_points_with_depth = _terminal_points_with_depth
-
         return self._terminal_points_with_depth
+
     @property
     def ellipsoid(self):
         """Minimum volume encapsulating ellipsoid (MVEE) of the cell's filament points as a tuple (center, radii, rotation)."""
         if self._ellipsoid is None:
             self._set_ellipsoid()
         return self._ellipsoid
-
     def _set_ellipsoid(self, n_points: int = 50, n_refine: int = 10, debug_plot: bool = False) -> "Cell":
         """
         Sets the parameters of the minimum volume encapsulating ellipsoid (MVEE) of the cells morphology points.
@@ -230,6 +256,14 @@ class Cell:
             plt.show()
         return self
 
+    # ----------------------------------------------- private functions -----------------------------------------------
+    def _clear_morphology_caches(self):
+        """Sets all properties that depend on the morphology to None."""
+        self._section_depths: dict[int, int] = None
+        self._terminal_points_with_depth: list[tuple[list, int]] = None
+        self._ellipsoid: tuple[NDArray, NDArray, NDArray] = None
+
+    # ------------------------------------------------------ I/O ------------------------------------------------------
     def save_morphology_to_hdf(self, path: str):
         """Saves the cell's morphology to an HDF5 file."""
         mutmorpho = MutableMorphology(self.morphology)  # only mutable morphologies can be written to file

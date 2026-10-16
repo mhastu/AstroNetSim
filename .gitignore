@@ -15,6 +15,7 @@ Shell_FeatureVector.csv
 FeatureVector.csv
 
 # dataset files
+datasets/
 dataset_C10.mat
 dataset_C11.mat
 dataset_H00.mat
