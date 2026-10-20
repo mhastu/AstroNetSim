@@ -230,8 +230,9 @@ def plot_ellipsoid(ax: plt.Axes, center: np.ndarray, radii: np.ndarray, rotation
         color="m",
     )
 
-def plot_cell(ax: plt.Axes, cell: Cell, color: str = "r", plot_ellipse: bool = False, mode: str = "skeleton", annotate: bool = False):
+def plot_cell(ax: plt.Axes, cell: Cell, color: str = "r", ellipsoid: bool = False, mode: str = "skeleton", annotate: bool = False):
     """Plots the cell on the given axis.
+
     Parameters
     ----------
     ax : plt.Axes
@@ -240,7 +241,7 @@ def plot_cell(ax: plt.Axes, cell: Cell, color: str = "r", plot_ellipse: bool = F
         The cell to plot.
     color : str
         The color to plot the cell in.
-    plot_ellipse : bool
+    ellipsoid : bool
         Whether to plot the minimum volume encapsulating ellipsoid (MVEE) of the cell.
     mode : str
         The mode to plot the cell in. Choose from "skeleton", "section", or "scatter".
@@ -259,13 +260,14 @@ def plot_cell(ax: plt.Axes, cell: Cell, color: str = "r", plot_ellipse: bool = F
     else:
         raise ValueError("Invalid mode. Choose from 'skeleton', 'section', or 'scatter'.")
 
-    if plot_ellipse:
+    if ellipsoid:
         # shapes (3,), (3,), (3, 3)
         center, radii, rotation = cell.ellipsoid
         plot_ellipsoid(ax, center, radii, rotation)
 
-def plot_cell_rot(fig: plt.Figure, cell: Cell, mode: str = "skeleton", plot_ellipse: bool = True):
+def plot_cell_rot(fig: plt.Figure, cell: Cell, mode: str = "skeleton", color: str = "r", ellipsoid: bool = True):
     """Plots the cell in different views with the option to plot the minimum volume encapsulating ellipsoid (MVEE) of the cell.
+
     Parameters
     ----------
     fig : plt.Figure
@@ -273,8 +275,11 @@ def plot_cell_rot(fig: plt.Figure, cell: Cell, mode: str = "skeleton", plot_elli
     cell : Cell
         The cell to plot.
     mode : str
-        The mode to plot the cell in.
-    plot_ellipse : bool
+        The mode to plot the cell in. Choose from "skeleton", "section", or "scatter".
+        "skeleton": Plots sections as straight cylinders between the branching points of the cell.
+        "segment": Plots all segments of the cell as cylinders.
+        "scatter": Plots all section points of the cell as scatter points.
+    ellipsoid : bool
         Whether to plot the minimum volume encapsulating ellipsoid (MVEE) of the cell.
     """
     if mode == None:
@@ -285,11 +290,11 @@ def plot_cell_rot(fig: plt.Figure, cell: Cell, mode: str = "skeleton", plot_elli
     ax3 = fig.add_subplot(223, projection = "3d", xlabel = "$\mu m$", ylabel = "$\mu m$", zlabel = "$\mu m$")
     ax4 = fig.add_subplot(224, projection = "3d", xlabel = "$\mu m$", ylabel = "$\mu m$", zlabel = "$\mu m$")
 
-    plot_cell(ax1, cell, plot_ellipse = plot_ellipse, mode = mode)
-    plot_cell(ax2, cell,  plot_ellipse = plot_ellipse, mode = mode)
-    plot_cell(ax3, cell,  plot_ellipse = plot_ellipse, mode = mode)
-    plot_cell(ax4, cell,  plot_ellipse = plot_ellipse, mode = mode)
-    
+    plot_cell(ax1, cell, ellipsoid = ellipsoid, mode = mode, color = color)
+    plot_cell(ax2, cell, ellipsoid = ellipsoid, mode = mode, color = color)
+    plot_cell(ax3, cell, ellipsoid = ellipsoid, mode = mode, color = color)
+    plot_cell(ax4, cell, ellipsoid = ellipsoid, mode = mode, color = color)
+
     ax1.set_title("Iso view")
     ax2.set_title("View onto xz-plane")
     ax3.set_title("View onto xy-plane")

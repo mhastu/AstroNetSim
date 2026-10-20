@@ -51,25 +51,42 @@ class Cell:
     def total_process_length(self) -> float:
         """Returns the sum of all segment lengths."""
         if self._total_process_length is None:
-            self._total_process_length: float = sum([np.sum(np.linalg.norm(np.diff(section.points, axis=0), axis=1)) for section in self.morphology.iter()])
+            segments, _ = self.segments_and_diameters
+            self._total_process_length = np.sum(np.linalg.norm(np.diff(segments, axis=1), axis=2))
         return self._total_process_length
+    
+    @property
+    def segments_and_diameters(self) -> tuple[NDArray, NDArray]:
+        """Returns a tuple of arrays containing all segments (n_segments, 2, 3) and corresponding diameters (n_segments, 2)."""
+        if self._segments_and_diameters is None:
+            points = np.asarray(self.morphology.points)
+            diameters = np.asarray(self.morphology.diameters)
+            offsets = np.asarray(self.morphology.section_offsets)
+
+            # exclude connections between different sections
+            mask = np.ones(len(points) - 1, dtype=bool)
+            mask[offsets[1:-1] - 1] = False
+
+            segments = np.stack([
+                points[:-1][mask],
+                points[1:][mask]
+            ], axis=1)  # shape: (n_segments, 2, 3)
+
+            diameters = np.stack([
+                diameters[:-1][mask],
+                diameters[1:][mask]
+            ], axis=1)  # shape: (n_segments, 2)
+
+            self._segments_and_diameters = (segments, diameters)
+        return self._segments_and_diameters
 
     @property
     def volume(self) -> float:
         """Returns the sum of the volumes of the cones composing a filament."""
         if self._volume is None:
-            self._volume = sum(
-                np.sum(
-                    (np.pi / 3)
-                    * np.linalg.norm(np.diff(section.points, axis=0), axis=1)
-                    * (
-                        (section.diameters[:-1] / 2) ** 2
-                        + (section.diameters[:-1] / 2) * (section.diameters[1:] / 2)
-                        + (section.diameters[1:] / 2) ** 2
-                    )
-                )
-                for section in self.morphology.iter()
-            )
+            segments, diameters = self.segments_and_diameters
+            lengths = np.linalg.norm(np.diff(segments, axis=1), axis=2).flatten() # shape: (n_segments,)
+            self._volume = np.pi/12 * lengths @ (diameters[:,:-1] ** 2 + diameters[:,:-1] * diameters[:,1:] + diameters[:,1:] ** 2).flatten()
         return self._volume
 
     @property
@@ -262,6 +279,9 @@ class Cell:
         self._section_depths: dict[int, int] = None
         self._terminal_points_with_depth: list[tuple[list, int]] = None
         self._ellipsoid: tuple[NDArray, NDArray, NDArray] = None
+        self._volume: float = None
+        self._total_process_length: float = None
+        self._segments_and_diameters: tuple[NDArray, NDArray] = None
 
     # ------------------------------------------------------ I/O ------------------------------------------------------
     def save_morphology_to_hdf(self, path: str):
