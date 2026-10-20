@@ -429,7 +429,7 @@ class Dataset:
         self._logger.info(f"Finished saving dataset to directory {path}.")
         return self
 
-    def load(self, path: str):
+    def load(self, path: str, cells_to_load: list = None):
         """Loads the dataset from the given directory containing a HDF5 file for each cell and a pickle file for metadata.
         Overwrites all previously loaded data.
 
@@ -437,6 +437,8 @@ class Dataset:
         ----------
         path : str
             The path to the directory to load the dataset from.
+        cells_to_load : list of int or None
+            List of cell IDs to load. If None, loads all cells.
         """
         self._logger.info(f"Loading dataset from directory {path}...")
         with open(os.path.join(path, "metadata.pkl"), "rb") as f:
@@ -447,9 +449,12 @@ class Dataset:
             self._name = metadata["name"] if "name" in metadata else None
             self._path = metadata["path"] if "path" in metadata else None
             self._encapsulating_cuboid = metadata["encapsulating_cuboid"] if "encapsulating_cuboid" in metadata else None
+            cells = [
+                cell_data for cell_data in metadata["cells"] if cells_to_load is None or cell_data["ID"] in cells_to_load
+            ]
             self._cells = {
                 # loading morphology resets caches like ellipsoid, so we load morphology first and then call from_dict to set the metadata and caches again
-                cell_data["ID"]: Cell(ID = cell_data["ID"], logger = self._logger).load_morphology_from_hdf(os.path.join(path, f"cell_{cell_data['ID']}.h5")).from_dict(cell_data) for cell_data in metadata["cells"]
+                cell_data["ID"]: Cell(ID = cell_data["ID"], logger = self._logger).load_morphology_from_hdf(os.path.join(path, f"cell_{cell_data['ID']}.h5")).from_dict(cell_data) for cell_data in cells
             }
         else:
             raise ValueError(f"Invalid import version: {version}")
