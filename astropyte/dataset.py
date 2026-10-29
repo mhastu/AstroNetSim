@@ -667,7 +667,7 @@ class Dataset:
         edge_cell_ids = []
 
         for cellID, cell in self.cells.items():
-            points = np.asarray(cell.morphology.points)
+            points = np.asarray(cell.morphology.points)  # TODO: according to Freund et al. 2024 (page 3), edge cell removal is about branching points, not filament points
             if points.size == 0:
                 continue
 

@@ -14,10 +14,16 @@ def average_total_process_length(
     return sum([cell.total_process_length for cell in dataset.cells.values()]) / len(dataset.cells)
 
 def average_volume(
-    dataset: Dataset
+    dataset: Dataset,
+    method: str = "cones"
 ) -> float:
     """Calculate the average volume of a dataset."""
-    return sum([cell.volume for cell in dataset.cells.values()]) / len(dataset.cells)
+    if method == "cones":
+        return sum([cell.volume_of_cones for cell in dataset.cells.values()]) / len(dataset.cells)
+    elif method == "cylinders":
+        return sum([cell.volume_of_cylinders for cell in dataset.cells.values()]) / len(dataset.cells)
+    else:
+        raise ValueError(f"Unknown volume calculation method: {method}")
 
 def average_number_of_terminals(
     dataset: Dataset
@@ -40,10 +46,11 @@ def main():
         dataset = Dataset(name=dataset_name, logger=logger)
         dataset.load("./datasets/" + dataset.name)
 
-        logger.info(f"Average Volume of cells in {dataset_name}: {average_volume(dataset):.2f} µm³")
-        logger.info(f"Average Total Process Length of {dataset_name}: {average_total_process_length(dataset):.2f} µm")
-        logger.info(f"Average Number of Terminals of {dataset_name}: {average_number_of_terminals(dataset):.2f}")
-        logger.info(f"Average CoM to Soma Distance (normalized by total process length) of {dataset_name}: {average_center_of_mass_to_soma_distance_normalized(dataset):.4f} * 10⁻³")
+        logger.info(f"Average Cone Volume of cells in {dataset_name}: {average_volume(dataset, method='cones'):.2f} µm³")
+        logger.info(f"Average Cylinder Volume of cells in {dataset_name}: {average_volume(dataset, method='cylinders'):.2f} µm³")
+        #logger.info(f"Average Total Process Length of {dataset_name}: {average_total_process_length(dataset):.2f} µm")
+        #logger.info(f"Average Number of Terminals of {dataset_name}: {average_number_of_terminals(dataset):.2f}")
+        #logger.info(f"Average CoM to Soma Distance (normalized by total process length) of {dataset_name}: {average_center_of_mass_to_soma_distance_normalized(dataset):.4f} * 10⁻³")
 
 if __name__ == "__main__":
     main()

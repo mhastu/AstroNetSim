@@ -57,7 +57,7 @@ class Cell:
     
     @property
     def segments_and_diameters(self) -> tuple[NDArray, NDArray]:
-        """Returns a tuple of arrays containing all segments (n_segments, 2, 3) and corresponding diameters (n_segments, 2)."""
+        """Returns a tuple of arrays containing all segment coordinates (n_segments, 2, 3) and corresponding diameters (n_segments, 2)."""
         if self._segments_and_diameters is None:
             points = np.asarray(self.morphology.points)
             diameters = np.asarray(self.morphology.diameters)
@@ -81,13 +81,18 @@ class Cell:
         return self._segments_and_diameters
 
     @property
-    def volume(self) -> float:
+    def volume_of_cones(self) -> float:
         """Returns the sum of the volumes of the cones composing a filament."""
-        if self._volume is None:
-            segments, diameters = self.segments_and_diameters
-            lengths = np.linalg.norm(np.diff(segments, axis=1), axis=2).flatten() # shape: (n_segments,)
-            self._volume = np.pi/12 * lengths @ (diameters[:,:-1] ** 2 + diameters[:,:-1] * diameters[:,1:] + diameters[:,1:] ** 2).flatten()
-        return self._volume
+        segments, diameters = self.segments_and_diameters
+        lengths = np.linalg.norm(np.diff(segments, axis=1), axis=2).flatten() # shape: (n_segments,)
+        return np.pi/12 * lengths @ (diameters[:,0] ** 2 + diameters[:,0] * diameters[:,1] + diameters[:,1] ** 2)
+
+    @property
+    def volume_of_cylinders(self) -> float:
+        """Returns the sum of the volumes of the cylinders composing a filament. The radius is taken as the average of the two endpoints of each segment."""
+        segments, diameters = self.segments_and_diameters
+        lengths = np.linalg.norm(np.diff(segments, axis=1), axis=2).flatten() # shape: (n_segments,)
+        return np.pi/16 * lengths @ (diameters[:,0] + diameters[:,1])**2
 
     @property
     def n_terminals(self):
@@ -279,7 +284,6 @@ class Cell:
         self._section_depths: dict[int, int] = None
         self._terminal_points_with_depth: list[tuple[list, int]] = None
         self._ellipsoid: tuple[NDArray, NDArray, NDArray] = None
-        self._volume: float = None
         self._total_process_length: float = None
         self._segments_and_diameters: tuple[NDArray, NDArray] = None
 
