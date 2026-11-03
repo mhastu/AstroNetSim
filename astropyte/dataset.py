@@ -640,9 +640,9 @@ class Dataset:
         self._logger.info(f"Finished loading dataset. Loaded {len(self.cells)} cells.")
         return self
 
-    def remove_edge_cells(self, offset: float = 2., mode: str = "hardlimit", limit: int = 20):
+    def remove_edge_cells(self, offset: float = 2., mode: str = "hardlimit", limit: int = 20, point_type: str = "branch"):
         """
-        Removes cells that have a certain number or percentage of their filament points within a certain distance to
+        Removes cells that have a certain number or percentage of points within a certain distance to
         the boundaries of the encapsulating cuboid.
         
         Parameters
@@ -651,13 +651,17 @@ class Dataset:
             Maximum allowed distance to the boundaries of the encapsulating cuboid
         mode : str
             Determines the meaning of the limit parameter. Must be either "hardlimit" or "percentage":
-            - "hardlimit": removes cells with more than `limit` filament points within the `offset` to the boundaries of the encapsulating cuboid
-            - "percentage": removes cells with more than `limit` percentage of their filament points within the `offset` to the boundaries of the encapsulating cuboid
+            - "hardlimit": removes cells with more than `limit` points within the `offset` to the boundaries of the encapsulating cuboid
+            - "percentage": removes cells with more than `limit` percentage of their points within the `offset` to the boundaries of the encapsulating cuboid
         limit : int
             see `mode`
+        point_type : str
+            Determines which points to consider for edge cell removal. Must be either "branch" or "all".
+            According to Freund et al. 2024 (page 3), edge cell removal is about branching points.
         """
         self._logger.info("Removing edge cells...")
         assert mode in ["hardlimit", "percentage"], "Invalid mode. Must be either 'hardlimit' or 'percentage'."
+        assert point_type in ["branch", "all"], "Invalid point_type. Must be either 'branch' or 'all'."
 
         min_x, max_x = self.encapsulating_cuboid[0]
         min_y, max_y = self.encapsulating_cuboid[1]
@@ -667,7 +671,10 @@ class Dataset:
         edge_cell_ids = []
 
         for cellID, cell in self.cells.items():
-            points = np.asarray(cell.morphology.points)  # TODO: according to Freund et al. 2024 (page 3), edge cell removal is about branching points, not filament points
+            if point_type == "branch":
+                points = np.asarray(cell.morphology.branch_points)
+            elif point_type == "all":
+                points = np.asarray(cell.morphology.points)
             if points.size == 0:
                 continue
 
