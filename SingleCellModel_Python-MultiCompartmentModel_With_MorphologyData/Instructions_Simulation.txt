@@ -1,0 +1,54 @@
+Astrocyte - Simulation
+author: Anna Freund
+email: astrocyte.simulation
+password : astrocyte.simulation2024
+
+cd /content/drive/MyDrive/SingleCellModel_Python-MultiCompartmentModel_With_MorphologyData
+import main
+run main
+
+
+1) Construct Excel Files and branchData file according to readme on github
+
+2) Add "print('length first process: ',len(processes_array[0]))" to main.py in line 90
+	(to know which compartment to stimulate)
+
+3) Run main.py for 1 level (configure in morph.ini file)
+	prints amount of compartment for first level --> x
+
+4) Choose compartment x to get stimulated by changing line 66 in astrocyte.py
+	--> _spike_comps = {"compartment_x": _spike_train}
+
+5)Plot whole cell
+--> Add to Astrocyte_Morphology_Model.py line 160:
+        "if self.maximum_level == "all":"
+            "self.maximum_level=(np.max(branchData['Level'])[0,0])"
+--> Set simulate_morpology_model to "False" in main.py line 37
+--> Run main.py for "all" level (configure in morph.ini file)
+	"maximum_level = all"
+Save plot: "cell"+[cellID]+"_"+[DataSet]+"morphology.pdf"
+
+6) Choose correct stimulation times (line 58-60 in astrocyte.py)
+    _spike_train = 2e-6 * np.ones(5000)
+    _spike_train[500:1125] = 0.1e-3  # glutamate stimulus anna
+    _spike_train[2000:2625] = 1e-3  # glutamate stimulus anna
+    _spike_train[3500:4125] = 6e-3  # glutamate stimulus anna
+
+7) Plot compartments 0, x-1, and x(stimulated one) by changing the last line in the morph.ini file
+	compartment_time_curves_to_plot = ['compartment_0','compartment_x-1','compartment_x']
+
+8) Set simulate_morpology_model = True in line 37 in main.py
+
+9) Uncomment line 99 and 100 (ca and frequency plots lead to index errors)
+    # [svr, length, connection_matrix, processes_array] = astrocyte_model.loading_astrocyte_data(ca_compartment_plot=True)
+    # [svr, length, connection_matrix, processes_array] = astrocyte_model.loading_astrocyte_data(freq_compartment_plot=True)
+
+10) To only simulate one main branch add following expression to if condition in line 210 in Astrocyte_Morphology_Model.py
+	" and (current_level==1 or index1 in process_list[0]):"
+
+7) Save plots
+--> morphology: "cell"+[cellID]+"_"+[DataSet]+"1branch.pdf" e.g.: cell26_H00_1branch.pdf
+--> time plots: "cell"+[cellID]+"_"+[DataSet]+"compartment0.pdf"
+		"cell"+[cellID]+"_"+[DataSet]+"compartment"[x-1]".pdf"
+		"cell"+[cellID]+"_"+[DataSet]+"compartment"[x]".pdf"
+
